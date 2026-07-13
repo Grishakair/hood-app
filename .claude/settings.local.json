@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /Users/GK/Downloads/hood-app/.claude)",
+      "Bash(lsof -i :5173 -sTCP:LISTEN)",
+      "Bash(curl -s https://1click.chaindefuser.com/v0/tokens)",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -s https://1click.chaindefuser.com/v0/tokens -o /private/tmp/claude-501/-Users-GK-Downloads-hood-app/f232ddcb-a047-40cc-8807-ccf1242411b0/scratchpad/tokens.json)",
+      "WebFetch(domain:docs.intents.aurora.dev)",
+      "Bash(curl -s -X POST https://intents-api.aurora.dev/api/quote/74e77951-05b9-44ef-86d7-4468dd5201cb -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(npx vite *)",
+      "WebFetch(domain:docs.near.org)",
+      "Bash(grep -n \"review swap\\\\|button$\\\\|handleSwap\\\\|swapStatus\\\\|useEffect\\(\\(\\) => {\" /Users/GK/Downloads/hood-app/src/App.jsx)",
+      "Bash(node -e ' *)",
+      "Bash(curl -s \"http://localhost:64637/src/App.jsx\")",
+      "Bash(ps -p 21424 -o pid,ppid,etime,command)",
+      "Bash(kill 21424)",
+      "Bash(nohup npm run dev)",
+      "Bash(disown)",
+      "Read(//tmp/**)",
+      "Bash(ps -p 26342 -o pid,etime,command)",
+      "Bash(curl -s \"http://localhost:5173/src/App.jsx\")",
+      "Bash(gh auth *)",
+      "Bash(git config *)",
+      "Bash(git --version)",
+      "Bash(git init *)",
+      "Bash(git add *)"
+    ]
+  }
+}
