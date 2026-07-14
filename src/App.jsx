@@ -186,7 +186,7 @@ function sleep(ms) {
 // second before the very next quote succeeds. Retry a couple of times
 // before surfacing an error, so a live-preview blip doesn't get shown as
 // if it were real.
-async function fetchQuoteWithRetry(url, body, { retries = 2, delayMs = 500, isCancelled } = {}) {
+async function fetchQuoteWithRetry(url, body, { retries = 3, delayMs = 500, isCancelled } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (isCancelled?.()) throw new Error("cancelled");
