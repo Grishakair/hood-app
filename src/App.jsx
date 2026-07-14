@@ -310,12 +310,11 @@ const HOW_LEVELS = [
     key: 1,
     label: "explain like I'm 7",
     icons: ["coin", "hood", "coin"],
-    captions: ["your coin", "hood", "their coin"],
+    captions: ["apple", "hood", "candy"],
     paragraphs: [
-      "Hood is a magic swap box for money-coins.",
-      "You put in one kind of coin. Hood finds someone who has the kind you want, and swaps them for you — safely, and fast.",
-      "You can also just send your coins straight to a friend, even turning them into a different coin along the way.",
-      "There's even a secret mode: it hides who's getting your coins, so nosy people can't peek.",
+      "Hood is a magic box.",
+      "You put in an apple. You take out candy. And here's the trick: nobody watching ever finds out you made that swap.",
+      "You can also just hand someone an apple — like passing a secret note. The person who gets it will never know it came from you.",
     ],
   },
   {
@@ -324,24 +323,22 @@ const HOW_LEVELS = [
     icons: ["wallet", "hood", "chain"],
     captions: ["your wallet", "hood", "any chain"],
     paragraphs: [
-      "Connect your wallet — Ethereum, Base, Optimism, or Polygon all work.",
-      "Pick what you want to sell and what you want to buy. They don't have to be on the same blockchain — Hood is built on NEAR Intents, so it can route across chains for you.",
-      "You get a live quote, approve one transaction, and a network of solvers gets your funds converted and delivered.",
-      "You can also just send tokens to someone else — optionally converting to a different token for them along the way.",
-      '"make it private" routes the swap through Confidential Intents instead of the public rails, so the recipient\'s address isn\'t linked to yours on-chain.',
+      "Hood doesn't execute your trade itself — it turns your request into an intent: what you have, what you want, where it should end up.",
+      "A network of solvers then competes to fill that intent at the best price. You're not picking a route through some pool — they bid, the best quote wins, and a smart contract enforces the deal: it either settles fully, or you get automatically refunded.",
+      "That's also how it moves value across chains without a separate \"bridge\" step — the solver network just settles the intent wherever your destination chain is.",
+      "Turn on \"private\" and the whole thing settles through Confidential Intents on NEAR instead of the public rails. The swap or transfer never shows up tied to your address on a public explorer, and the recipient can't see who sent it or what the original token was.",
     ],
   },
   {
     key: 3,
     label: "crypto OG",
     icons: ["wallet", "chain", "lock"],
-    captions: ["deposit tx", "solver network", "confidential intents"],
+    captions: ["intent", "solver network", "confidential intents"],
     paragraphs: [
-      "Hood is a thin UI over NEAR Intents, via Aurora's Intents API (intents-api.aurora.dev).",
-      "Requesting a swap gets a signed quote with a generated deposit address. You send the origin asset there in one on-chain tx from your connected wallet (wagmi sendTransaction/writeContract) — no approvals, just a direct transfer.",
-      "Aurora's solver network fulfills the intent and delivers the destination asset to the recipient/chain you specified. Status is polled via /api/status until SUCCESS, FAILED, or REFUNDED.",
-      'confidentiality: "basic" routes settlement through Confidential Intents rails instead of public ones — the deposit tx itself is still a normal public on-chain transfer, but the payout side is decoupled from it, so the recipient can\'t be linked back to your deposit.',
-      "Aurora takes an integrator fee (up to 100bps, split 60/40) baked into the quote.",
+      "Hood is a thin client over NEAR's intents settlement layer. You're not routing through liquidity yourself — you emit a declarative intent (source asset, destination asset, delivery address) and a competitive market of solvers bids for the right to fill it.",
+      "Settlement is atomic: the winning quote is enforced by contract logic on NEAR, so the intent either fills completely or reverts with a refund — no partial fills, no bridge custody window in between.",
+      "Cross-chain is a side effect of that design, not a bolted-on feature. Solvers compete across venues and chains, so moving value into a different asset on a different chain looks, protocol-wise, identical to a same-chain fill.",
+      "Confidential mode moves settlement onto NEAR's shielded intents rails instead of the public path. The fill still happens on-chain, but the depositor-to-recipient linkage is broken at the settlement layer itself, not just hidden in a UI.",
     ],
   },
 ];
@@ -357,9 +354,6 @@ const HOOD_ASCII_LIGHT = [".", ":", "'", ","];
 const HOOD_ASCII_MID = ["i", "r", "v", "x", "u", "n", "c", "l"];
 const HOOD_ASCII_HEAVY = ["B", "Q", "R", "8", "M", "W", "%", "#", "D"];
 
-// Half-width of an actual hoodie silhouette at a given height: a rounded
-// dome (the hood) that flares out to shoulders, then a roughly straight
-// body down to the hem. Returns 0 outside the garment entirely.
 // Point-in-rounded-rect test — a cheap stand-in for the real HoodMark bezier
 // path, good enough for a stylized character-art rendering.
 function insideRoundedRect(px, py, x0, y0, x1, y1, r) {
