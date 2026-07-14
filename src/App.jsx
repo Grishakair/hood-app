@@ -1469,6 +1469,7 @@ export default function App() {
                 value={sellAmt}
                 onChange={setSellAmt}
                 token={sellTok}
+                network={sellNetwork}
                 selectToken
                 onSelectClick={() => {
                   setTokenModalTarget("sell");
@@ -1505,6 +1506,7 @@ export default function App() {
                 value=""
                 placeholder={quoteStatus === "loading" ? "..." : buyAmount || "0"}
                 token={buyTok}
+                network={buyNetwork}
                 selectToken
                 onSelectClick={() => {
                   setTokenModalTarget("buy");
@@ -1695,6 +1697,7 @@ export default function App() {
                 value={sendAmt}
                 onChange={setSendAmt}
                 token={sendTok}
+                network={sendNetwork}
                 selectToken
                 onSelectClick={() => {
                   setTokenModalTarget("send");
@@ -2378,7 +2381,7 @@ function DepositPanel({ address, amountLabel, symbol, network, deadline, timeEst
   );
 }
 
-function FieldRow({ label, value, onChange, token, placeholder = "0", selectToken, onSelectClick, gray, line, ink, bold }) {
+function FieldRow({ label, value, onChange, token, network, placeholder = "0", selectToken, onSelectClick, gray, line, ink, bold }) {
   return (
     <div style={{ borderBottom: `1px solid ${line}`, paddingBottom: 8, marginBottom: 4 }}>
       <div style={{ fontSize: 11, color: gray, marginBottom: 4, fontWeight: bold ? 600 : 400 }}>{label}</div>
@@ -2405,14 +2408,12 @@ function FieldRow({ label, value, onChange, token, placeholder = "0", selectToke
         )}
         <span
           onClick={selectToken ? onSelectClick : undefined}
-          style={{
-            fontSize: 13,
-            borderBottom: `1px solid ${ink}`,
-            paddingBottom: 1,
-            cursor: selectToken ? "pointer" : "default",
-          }}
+          style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", cursor: selectToken ? "pointer" : "default" }}
         >
-          {selectToken ? (token ? token : "select token") : token}
+          <span style={{ fontSize: 13, borderBottom: `1px solid ${ink}`, paddingBottom: 1 }}>
+            {selectToken ? (token ? token : "select token") : token}
+          </span>
+          {token && network && <span style={{ fontSize: 10, color: gray, marginTop: 2 }}>on {network}</span>}
         </span>
       </div>
     </div>
