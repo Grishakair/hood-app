@@ -176,6 +176,36 @@ function buildQuoteBody({ dry, originToken, destToken, amountBaseUnits, slippage
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// The dry-quote endpoint occasionally fails transiently — the solver
+// network taking a moment, not an actual absence of a route — and without
+// a retry that shows up to the user as "no route found" for a split
+// second before the very next quote succeeds. Retry a couple of times
+// before surfacing an error, so a live-preview blip doesn't get shown as
+// if it were real.
+async function fetchQuoteWithRetry(url, body, { retries = 2, delayMs = 500, isCancelled } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (isCancelled?.()) throw new Error("cancelled");
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error("quote failed");
+      return await res.json();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) await sleep(delayMs);
+    }
+  }
+  throw lastErr;
+}
+
 // balanceOf (read) + transfer (deposit funding) in one ABI.
 const ERC20_ABI = [
   {
@@ -770,26 +800,20 @@ export default function App() {
     const slippageBps = Math.round(Number(customSlippage || slippage) * 100);
 
     const timeout = setTimeout(() => {
-      fetch(AURORA_QUOTE_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          buildQuoteBody({
-            dry: true,
-            originToken,
-            destToken,
-            amountBaseUnits: toBaseUnits(sellAmt, originToken.decimals),
-            slippageBps,
-            recipient: recipientPlaceholder,
-            refundTo: refundPlaceholder,
-            confidential: swapPriv,
-          })
-        ),
-      })
-        .then((res) => {
-          if (!res.ok) throw new Error("quote failed");
-          return res.json();
-        })
+      fetchQuoteWithRetry(
+        AURORA_QUOTE_URL,
+        buildQuoteBody({
+          dry: true,
+          originToken,
+          destToken,
+          amountBaseUnits: toBaseUnits(sellAmt, originToken.decimals),
+          slippageBps,
+          recipient: recipientPlaceholder,
+          refundTo: refundPlaceholder,
+          confidential: swapPriv,
+        }),
+        { isCancelled: () => cancelled }
+      )
         .then((data) => {
           if (cancelled) return;
           setBuyAmount(data.quote.amountOutFormatted);
