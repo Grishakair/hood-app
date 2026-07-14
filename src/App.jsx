@@ -125,6 +125,18 @@ const GAS_RESERVE_NATIVE = {
 };
 
 const isEvmAddress = (value) => /^0x[a-fA-F0-9]{40}$/.test(value || "");
+const isTronAddress = (value) => /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(value || "");
+
+// Catches the single most common mistake — pasting an address in the wrong
+// chain's format (e.g. an 0x address as a Tron recipient) — without trying
+// to fully validate every one of the other 30+ chains' formats.
+function addressLooksWrongForChain(value, network) {
+  const net = network?.toLowerCase();
+  if (!value) return false;
+  if (net === "tron") return !isTronAddress(value);
+  if (CHAIN_ID_BY_NETWORK[net]) return !isEvmAddress(value);
+  return false;
+}
 
 // Cuts (never rounds) a decimal string down to N places, so "max" amounts
 // can never end up asking to spend more than the wallet actually holds.
@@ -777,14 +789,17 @@ export default function App() {
 
     // refundTo/recipient each need to be validly-formatted for their own
     // chain — a dummy EVM address won't do for a non-EVM origin/destination.
-    // Use whatever the user's already typed, else fall back to the token's
-    // own contract address (guaranteed valid on that chain) as a stand-in
-    // just for previewing the rate; native non-EVM coins with neither just
-    // skip the live preview until a real address is entered.
+    // The preview doesn't care whose address it is, only that the FORMAT is
+    // right, so prefer the token's own contract address (guaranteed valid
+    // on that chain) over whatever's been typed so far — while the user is
+    // still composing a non-EVM address, a partial/wrong-chain value here
+    // would otherwise make the live preview fail with a misleading "no
+    // route found" even though the route is fine. Only fall back to the
+    // typed value for native non-EVM coins that have no contract address.
     const placeholderFor = (token, typed) => {
       const chainId = CHAIN_ID_BY_NETWORK[token?.network?.toLowerCase()];
       if (chainId) return (isConnected && address) || "0x0000000000000000000000000000000000000000";
-      return typed || token?.contractAddress || null;
+      return token?.contractAddress || typed || null;
     };
     const refundPlaceholder = placeholderFor(originToken, swapRefundAddress);
     const recipientPlaceholder = placeholderFor(destToken, swapRecipient);
@@ -959,10 +974,17 @@ export default function App() {
       open();
       return;
     }
-    if (executionMode === "manual" && !sendRefundAddress) {
-      setSendStatus("error");
-      setSendError("enter your own address on the origin chain (for refunds)");
-      return;
+    if (executionMode === "manual") {
+      if (!sendRefundAddress) {
+        setSendStatus("error");
+        setSendError("enter your own address on the origin chain (for refunds)");
+        return;
+      }
+      if (addressLooksWrongForChain(sendRefundAddress, sendNetwork)) {
+        setSendStatus("error");
+        setSendError(`that doesn't look like a ${sendNetwork} address`);
+        return;
+      }
     }
 
     // A non-EVM origin chain has no "plain wallet transfer" option at all —
@@ -970,6 +992,12 @@ export default function App() {
     // not privacy/convert are checked.
     const needsIntents = priv || convertToken || !chainId;
     const isNative = Boolean(chainId) && NATIVE_SYMBOL_BY_CHAIN[chainId] === originToken.symbol;
+    const destNetwork = convertToken ? receiveNetwork : sendNetwork;
+    if (needsIntents && addressLooksWrongForChain(recipient, destNetwork)) {
+      setSendStatus("error");
+      setSendError(`that doesn't look like a ${destNetwork} address`);
+      return;
+    }
 
     try {
       setSendError("");
@@ -1157,10 +1185,17 @@ export default function App() {
       open();
       return;
     }
-    if (executionMode === "manual" && !swapRefundAddress) {
-      setSwapStatus("error");
-      setSwapError("enter your own address on the origin chain (for refunds)");
-      return;
+    if (executionMode === "manual") {
+      if (!swapRefundAddress) {
+        setSwapStatus("error");
+        setSwapError("enter your own address on the origin chain (for refunds)");
+        return;
+      }
+      if (addressLooksWrongForChain(swapRefundAddress, sellNetwork)) {
+        setSwapStatus("error");
+        setSwapError(`that doesn't look like a ${sellNetwork} address`);
+        return;
+      }
     }
 
     const destChainId = CHAIN_ID_BY_NETWORK[buyNetwork?.toLowerCase()];
@@ -1168,6 +1203,11 @@ export default function App() {
     if (!finalRecipient) {
       setSwapStatus("error");
       setSwapError("enter a recipient address for the destination chain");
+      return;
+    }
+    if (addressLooksWrongForChain(finalRecipient, buyNetwork)) {
+      setSwapStatus("error");
+      setSwapError(`that doesn't look like a ${buyNetwork} address`);
       return;
     }
     const amountBaseUnits = toBaseUnits(sellAmt, originToken.decimals);
