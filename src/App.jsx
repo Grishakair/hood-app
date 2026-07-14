@@ -12,7 +12,7 @@ import {
 import { formatUnits } from "viem";
 import QRCode from "qrcode";
 import { useAppKit } from "@reown/appkit/react";
-import { mainnet, base, optimism, polygon } from "@reown/appkit/networks";
+import { mainnet, base, optimism, polygon, bsc } from "@reown/appkit/networks";
 import { wagmiConfig } from "./config/appkit.js";
 
 const EXPLORER_BY_CHAIN = {
@@ -20,6 +20,7 @@ const EXPLORER_BY_CHAIN = {
   [base.id]: "https://basescan.org",
   [optimism.id]: "https://optimistic.etherscan.io",
   [polygon.id]: "https://polygonscan.com",
+  [bsc.id]: "https://bscscan.com",
 };
 
 // Fallback token metadata for the picker when the live 1click list can't be
@@ -49,11 +50,16 @@ const CHAIN_ID_BY_NETWORK = {
   op: optimism.id,
   polygon: polygon.id,
   pol: polygon.id,
+  bsc: bsc.id,
+  bnb: bsc.id,
 };
 
-// Shown first in the network filter chips — the chains wallet connect,
-// balances, and swap execution actually work on.
-const SUPPORTED_NETWORK_CODES = ["eth", "base", "op", "pol"];
+// Shown first in the network filter chips — our highest-priority chains.
+// eth/base/bsc are wallet-connectable (auto-sign, see CHAIN_ID_BY_NETWORK);
+// tron isn't an EVM chain and always goes through the manual deposit-address
+// flow (see ensureChain/executionMode) — featured here anyway since it's a
+// heavily-used chain for USDT, just without the auto-sign convenience.
+const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "tron"];
 
 // Sort order for the buy/receive token list — the 1click API returns NEAR
 // tokens first just because of how it's indexed, not because they're most
@@ -68,8 +74,8 @@ const PRIORITY_TOKEN_ORDER = [
   { symbol: "ETH", network: "eth" },
   { symbol: "ZEC", network: "zec" },
 ];
-const POPULAR_TOKEN_SYMBOLS = ["USDC", "USDT", "ETH", "WETH", "POL", "BTC", "SOL"];
-const POPULAR_TOKEN_NETWORKS = ["eth", "base", "op", "pol"];
+const POPULAR_TOKEN_SYMBOLS = ["USDC", "USDT", "ETH", "WETH", "POL", "BTC", "SOL", "BNB", "TRX"];
+const POPULAR_TOKEN_NETWORKS = ["eth", "base", "bsc", "tron"];
 
 function tokenSortRank(t) {
   const net = t.network?.toLowerCase();
@@ -84,6 +90,7 @@ const NATIVE_SYMBOL_BY_CHAIN = {
   [base.id]: "ETH",
   [optimism.id]: "ETH",
   [polygon.id]: "POL",
+  [bsc.id]: "BNB",
 };
 
 const CHAIN_NAME_BY_ID = {
@@ -114,6 +121,7 @@ const GAS_RESERVE_NATIVE = {
   [base.id]: 0.0005,
   [optimism.id]: 0.0005,
   [polygon.id]: 0.05,
+  [bsc.id]: 0.001,
 };
 
 const isEvmAddress = (value) => /^0x[a-fA-F0-9]{40}$/.test(value || "");
