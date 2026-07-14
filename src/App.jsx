@@ -152,7 +152,7 @@ const STATUS_DETAIL_LABEL = {
   PROCESSING: "deposit confirmed — swapping now...",
 };
 
-function buildQuoteBody({ dry, originToken, destToken, amountBaseUnits, slippageBps, recipient, confidential }) {
+function buildQuoteBody({ dry, originToken, destToken, amountBaseUnits, slippageBps, recipient, refundTo, confidential }) {
   return {
     dry,
     swapType: "EXACT_INPUT",
@@ -161,7 +161,11 @@ function buildQuoteBody({ dry, originToken, destToken, amountBaseUnits, slippage
     originAsset: originToken.assetId,
     destinationAsset: destToken.assetId,
     slippageTolerance: slippageBps,
-    refundTo: recipient,
+    // refundTo lives on the ORIGIN chain, recipient on the DESTINATION chain —
+    // only the same value when a connected EVM wallet is signing both sides.
+    // Falls back to recipient for the dry-preview call site, which never had
+    // a separate refund address to begin with.
+    refundTo: refundTo ?? recipient,
     refundType: "ORIGIN_CHAIN",
     recipient,
     recipientType: "DESTINATION_CHAIN",
@@ -555,7 +559,7 @@ function WalletMenu({ address, ink, gray, line, paper, onClose }) {
             {address.slice(0, 6)}…{address.slice(-4)}
           </div>
           <div style={{ fontSize: 11, color: gray, marginTop: 4 }}>
-            {balance ? `${Number(balance.formatted).toFixed(4)} ETH` : "..."}
+            {balance && Number.isFinite(Number(balance.formatted)) ? `${Number(balance.formatted).toFixed(4)} ETH` : "..."}
           </div>
           <div
             style={{
@@ -611,7 +615,7 @@ export default function App() {
   const [buyAmount, setBuyAmount] = useState("");
   const [quoteStatus, setQuoteStatus] = useState("idle"); // idle | loading | ok | error
   const [swapFeeBps, setSwapFeeBps] = useState(null);
-  const [swapStatus, setSwapStatus] = useState("idle"); // idle | quoting | awaiting-signature | pending-deposit | processing | success | failed | refunded | error
+  const [swapStatus, setSwapStatus] = useState("idle"); // idle | quoting | awaiting-signature | pending-deposit | awaiting-deposit | processing | success | failed | refunded | error
   const [swapError, setSwapError] = useState("");
   const [swapTxHash, setSwapTxHash] = useState("");
   // Unlike swapTxHash (cleared whenever the trade form changes), this is a
@@ -621,15 +625,27 @@ export default function App() {
   const [lastTxChainId, setLastTxChainId] = useState(null);
   const [swapStatusDetail, setSwapStatusDetail] = useState("");
   const swapPollToken = useRef(0);
+  // Manual-deposit mode: no connected wallet signs anything — we just hand
+  // back a one-time deposit address and watch for the funds to arrive, same
+  // as any exchange-style deposit flow. Lets non-EVM origins (Tron, BTC,
+  // SOL, ...) and "I'd rather not connect a wallet" both work.
+  const [swapManualOverride, setSwapManualOverride] = useState(false);
+  const [swapRefundAddress, setSwapRefundAddress] = useState("");
+  const [swapDepositAddress, setSwapDepositAddress] = useState("");
+  const [swapDepositDeadline, setSwapDepositDeadline] = useState(null);
   const [recipient, setRecipient] = useState("");
   const [sendAmt, setSendAmt] = useState("");
   const [sendTok, setSendTok] = useState("ETH");
   const [sendNetwork, setSendNetwork] = useState("eth");
-  const [sendStatus, setSendStatus] = useState("idle"); // idle | quoting | awaiting-signature | pending-deposit | processing | success | failed | refunded | error
+  const [sendStatus, setSendStatus] = useState("idle"); // idle | quoting | awaiting-signature | pending-deposit | awaiting-deposit | processing | success | failed | refunded | error
   const [sendError, setSendError] = useState("");
   const [sendTxHash, setSendTxHash] = useState("");
   const [sendStatusDetail, setSendStatusDetail] = useState("");
   const sendPollToken = useRef(0);
+  const [sendManualOverride, setSendManualOverride] = useState(false);
+  const [sendRefundAddress, setSendRefundAddress] = useState("");
+  const [sendDepositAddress, setSendDepositAddress] = useState("");
+  const [sendDepositDeadline, setSendDepositDeadline] = useState(null);
   const [swapRecipient, setSwapRecipient] = useState("");
   const [swapPriv, setSwapPriv] = useState(false);
   const [slippage, setSlippage] = useState("0.5");
@@ -645,6 +661,10 @@ export default function App() {
 
   const [tokenModalOpen, setTokenModalOpen] = useState(false);
   const [tokenModalTarget, setTokenModalTarget] = useState("buy");
+  // Lets a connected user browse past the owned-balance filter on the
+  // sell/send picker — e.g. to pick a Tron/BTC/etc. origin their EVM wallet
+  // can't hold, which then routes through the manual deposit flow.
+  const [tokenModalShowAll, setTokenModalShowAll] = useState(false);
   const [tokenSearch, setTokenSearch] = useState("");
   const [networkFilter, setNetworkFilter] = useState("all");
   const [chainsExpanded, setChainsExpanded] = useState(false);
@@ -704,13 +724,38 @@ export default function App() {
   }, [isConnected, address, liveTokens]);
 
   useEffect(() => {
+    if (tokenModalOpen) setTokenModalShowAll(false);
+  }, [tokenModalOpen, tokenModalTarget]);
+
+  useEffect(() => {
     if (mode !== "swap" || !AURORA_QUOTE_URL) return;
 
     const originToken = findTokenRecord(liveTokens, sellTok, sellNetwork);
     const destToken = findTokenRecord(liveTokens, buyTok, buyNetwork);
     const amountNum = Number(sellAmt);
 
-    if (!originToken?.assetId || !destToken?.assetId || !amountNum || amountNum <= 0) {
+    // refundTo/recipient each need to be validly-formatted for their own
+    // chain — a dummy EVM address won't do for a non-EVM origin/destination.
+    // Use whatever the user's already typed, else fall back to the token's
+    // own contract address (guaranteed valid on that chain) as a stand-in
+    // just for previewing the rate; native non-EVM coins with neither just
+    // skip the live preview until a real address is entered.
+    const placeholderFor = (token, typed) => {
+      const chainId = CHAIN_ID_BY_NETWORK[token?.network?.toLowerCase()];
+      if (chainId) return (isConnected && address) || "0x0000000000000000000000000000000000000000";
+      return typed || token?.contractAddress || null;
+    };
+    const refundPlaceholder = placeholderFor(originToken, swapRefundAddress);
+    const recipientPlaceholder = placeholderFor(destToken, swapRecipient);
+
+    if (
+      !originToken?.assetId ||
+      !destToken?.assetId ||
+      !amountNum ||
+      amountNum <= 0 ||
+      !refundPlaceholder ||
+      !recipientPlaceholder
+    ) {
       setBuyAmount("");
       setSwapFeeBps(null);
       setQuoteStatus("idle");
@@ -719,7 +764,6 @@ export default function App() {
 
     let cancelled = false;
     setQuoteStatus("loading");
-    const refundRecipient = isConnected && address ? address : "0x0000000000000000000000000000000000000000";
     const slippageBps = Math.round(Number(customSlippage || slippage) * 100);
 
     const timeout = setTimeout(() => {
@@ -733,7 +777,8 @@ export default function App() {
             destToken,
             amountBaseUnits: toBaseUnits(sellAmt, originToken.decimals),
             slippageBps,
-            recipient: refundRecipient,
+            recipient: recipientPlaceholder,
+            refundTo: refundPlaceholder,
             confidential: swapPriv,
           })
         ),
@@ -762,7 +807,22 @@ export default function App() {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [mode, sellAmt, sellTok, sellNetwork, buyTok, buyNetwork, liveTokens, slippage, customSlippage, isConnected, address, swapPriv]);
+  }, [
+    mode,
+    sellAmt,
+    sellTok,
+    sellNetwork,
+    buyTok,
+    buyNetwork,
+    liveTokens,
+    slippage,
+    customSlippage,
+    isConnected,
+    address,
+    swapPriv,
+    swapRefundAddress,
+    swapRecipient,
+  ]);
 
   // A previous attempt's result no longer applies once the trade itself changes.
   useEffect(() => {
@@ -770,6 +830,8 @@ export default function App() {
     setSwapError("");
     setSwapTxHash("");
     setSwapStatusDetail("");
+    setSwapDepositAddress("");
+    setSwapDepositDeadline(null);
   }, [sellAmt, sellTok, sellNetwork, buyTok, buyNetwork, swapPriv]);
 
   useEffect(() => {
@@ -777,6 +839,8 @@ export default function App() {
     setSendError("");
     setSendTxHash("");
     setSendStatusDetail("");
+    setSendDepositAddress("");
+    setSendDepositDeadline(null);
   }, [sendAmt, sendTok, sendNetwork, recipient, priv, convertToken, receiveToken, receiveNetwork]);
 
   function pollSendStatus(depositAddress) {
@@ -800,7 +864,12 @@ export default function App() {
             setSendStatus("refunded");
             setSendStatusDetail("");
           } else {
-            setSendStatus("processing");
+            // PENDING_DEPOSIT just means nothing's arrived yet — in manual
+            // mode that's still "awaiting-deposit" (keep showing the
+            // address), not "processing" (which implies we've seen it).
+            if (data.status !== "PENDING_DEPOSIT") {
+              setSendStatus("processing");
+            }
             setSendStatusDetail(data.status);
             setTimeout(check, 3000);
           }
@@ -820,10 +889,6 @@ export default function App() {
   // same machinery as a swap, because a same-chain wallet transfer can't be
   // made to hide the sender/recipient link on its own.
   async function handleSend() {
-    if (!isConnected || !address) {
-      open();
-      return;
-    }
     if (!recipient) {
       setSendStatus("error");
       setSendError("enter a recipient address");
@@ -850,14 +915,24 @@ export default function App() {
     }
 
     const chainId = CHAIN_ID_BY_NETWORK[sendNetwork?.toLowerCase()];
-    if (!chainId) {
+    const canAutoSign = isConnected && Boolean(chainId);
+    const executionMode = canAutoSign && !sendManualOverride ? "wallet" : "manual";
+
+    if (executionMode === "wallet" && (!isConnected || !address)) {
+      open();
+      return;
+    }
+    if (executionMode === "manual" && !sendRefundAddress) {
       setSendStatus("error");
-      setSendError("this network isn't supported by the connected wallet yet");
+      setSendError("enter your own address on the origin chain (for refunds)");
       return;
     }
 
-    const needsIntents = priv || convertToken;
-    const isNative = NATIVE_SYMBOL_BY_CHAIN[chainId] === originToken.symbol;
+    // A non-EVM origin chain has no "plain wallet transfer" option at all —
+    // it always has to route through the Aurora deposit flow, whether or
+    // not privacy/convert are checked.
+    const needsIntents = priv || convertToken || !chainId;
+    const isNative = Boolean(chainId) && NATIVE_SYMBOL_BY_CHAIN[chainId] === originToken.symbol;
 
     try {
       setSendError("");
@@ -917,6 +992,7 @@ export default function App() {
             amountBaseUnits,
             slippageBps,
             recipient,
+            refundTo: executionMode === "wallet" ? address : sendRefundAddress,
             confidential: priv,
           })
         ),
@@ -925,6 +1001,14 @@ export default function App() {
       const quoteData = await res.json();
       const depositAddress = quoteData.quote?.depositAddress;
       if (!depositAddress) throw new Error("no deposit address returned");
+
+      if (executionMode === "manual") {
+        setSendDepositAddress(depositAddress);
+        setSendDepositDeadline(quoteData.quote?.deadline || null);
+        setSendStatus("awaiting-deposit");
+        pollSendStatus(depositAddress);
+        return;
+      }
 
       setSendStatus("awaiting-signature");
       await ensureChain(chainId);
@@ -981,7 +1065,12 @@ export default function App() {
             setSwapStatusDetail("");
           } else {
             // KNOWN_DEPOSIT_TX | PENDING_DEPOSIT | INCOMPLETE_DEPOSIT | PROCESSING
-            setSwapStatus("processing");
+            // PENDING_DEPOSIT just means nothing's arrived yet — in manual
+            // mode that's still "awaiting-deposit" (keep showing the
+            // address), not "processing" (which implies we've seen it).
+            if (data.status !== "PENDING_DEPOSIT") {
+              setSwapStatus("processing");
+            }
             setSwapStatusDetail(data.status);
             setTimeout(check, 3000);
           }
@@ -998,10 +1087,6 @@ export default function App() {
   }
 
   async function handleSwap() {
-    if (!isConnected || !address) {
-      open();
-      return;
-    }
     if (!AURORA_QUOTE_URL) {
       setSwapStatus("error");
       setSwapError("Aurora API key isn't configured (VITE_AURORA_API_KEY missing)");
@@ -1027,13 +1112,26 @@ export default function App() {
     }
 
     const chainId = CHAIN_ID_BY_NETWORK[originToken.network?.toLowerCase()];
-    if (!chainId) {
+    const canAutoSign = isConnected && Boolean(chainId);
+    const executionMode = canAutoSign && !swapManualOverride ? "wallet" : "manual";
+
+    if (executionMode === "wallet" && (!isConnected || !address)) {
+      open();
+      return;
+    }
+    if (executionMode === "manual" && !swapRefundAddress) {
       setSwapStatus("error");
-      setSwapError("this origin network isn't supported by the connected wallet yet");
+      setSwapError("enter your own address on the origin chain (for refunds)");
       return;
     }
 
-    const finalRecipient = swapRecipient || address;
+    const destChainId = CHAIN_ID_BY_NETWORK[buyNetwork?.toLowerCase()];
+    const finalRecipient = swapRecipient || (isConnected && destChainId ? address : "");
+    if (!finalRecipient) {
+      setSwapStatus("error");
+      setSwapError("enter a recipient address for the destination chain");
+      return;
+    }
     const amountBaseUnits = toBaseUnits(sellAmt, originToken.decimals);
     const slippageBps = Math.round(Number(customSlippage || slippage) * 100);
 
@@ -1054,6 +1152,7 @@ export default function App() {
             amountBaseUnits,
             slippageBps,
             recipient: finalRecipient,
+            refundTo: executionMode === "wallet" ? address : swapRefundAddress,
             confidential: swapPriv,
           })
         ),
@@ -1062,6 +1161,14 @@ export default function App() {
       const quoteData = await res.json();
       const depositAddress = quoteData.quote?.depositAddress;
       if (!depositAddress) throw new Error("no deposit address returned");
+
+      if (executionMode === "manual") {
+        setSwapDepositAddress(depositAddress);
+        setSwapDepositDeadline(quoteData.quote?.deadline || null);
+        setSwapStatus("awaiting-deposit");
+        pollSwapStatus(depositAddress);
+        return;
+      }
 
       setSwapStatus("awaiting-signature");
       await ensureChain(chainId);
@@ -1101,31 +1208,45 @@ export default function App() {
     }
   }
 
-  const swapBusy = ["quoting", "awaiting-signature", "pending-deposit", "processing"].includes(swapStatus);
+  const swapOriginChainId = CHAIN_ID_BY_NETWORK[sellNetwork?.toLowerCase()];
+  const swapCanAutoSign = isConnected && Boolean(swapOriginChainId);
+  const swapExecutionMode = swapCanAutoSign && !swapManualOverride ? "wallet" : "manual";
+  const swapDestChainId = CHAIN_ID_BY_NETWORK[buyNetwork?.toLowerCase()];
+  const swapRecipientRequired = !(isConnected && swapDestChainId);
+
+  const sendOriginChainId = CHAIN_ID_BY_NETWORK[sendNetwork?.toLowerCase()];
+  const sendCanAutoSign = isConnected && Boolean(sendOriginChainId);
+  const sendExecutionMode = sendCanAutoSign && !sendManualOverride ? "wallet" : "manual";
+
+  const swapBusy = ["quoting", "awaiting-signature", "pending-deposit", "awaiting-deposit", "processing"].includes(swapStatus);
   const swapButtonLabel =
     {
       quoting: "getting live quote...",
       "awaiting-signature": "confirm in wallet...",
       "pending-deposit": "sending deposit...",
+      "awaiting-deposit": "waiting for your deposit...",
       processing: "processing swap...",
       success: "swap complete — do another",
       failed: "swap failed — try again",
       refunded: "refunded — try again",
       error: "try again",
-    }[swapStatus] || (!isConnected ? "connect wallet" : swapPriv ? "review private swap" : "review swap");
+    }[swapStatus] ||
+    (swapExecutionMode === "manual" ? "get deposit address" : swapPriv ? "review private swap" : "review swap");
 
-  const sendBusy = ["quoting", "awaiting-signature", "pending-deposit", "processing"].includes(sendStatus);
+  const sendBusy = ["quoting", "awaiting-signature", "pending-deposit", "awaiting-deposit", "processing"].includes(sendStatus);
   const sendButtonLabel =
     {
       quoting: "getting live quote...",
       "awaiting-signature": "confirm in wallet...",
       "pending-deposit": "sending deposit...",
+      "awaiting-deposit": "waiting for your deposit...",
       processing: "processing...",
       success: "sent — send another",
       failed: "send failed — try again",
       refunded: "refunded — try again",
       error: "try again",
-    }[sendStatus] || (!isConnected ? "connect wallet" : priv ? "send privately" : "send");
+    }[sendStatus] ||
+    (sendExecutionMode === "manual" ? "get deposit address" : priv ? "send privately" : "send");
 
   const mainButtonLabel = mode === "swap" ? swapButtonLabel : sendButtonLabel;
   const mainButtonBusy = mode === "swap" ? swapBusy : sendBusy;
@@ -1394,12 +1515,39 @@ export default function App() {
                 <div style={{ fontSize: 11, color: gray, marginTop: 2 }}>fee: {(swapFeeBps / 100).toFixed(2)}%</div>
               )}
 
+              {swapExecutionMode === "manual" && (
+                <div style={{ marginTop: 12, marginBottom: 4 }}>
+                  <div style={{ fontSize: 11, color: gray, marginBottom: 4 }}>
+                    your {sellNetwork} address (for refunds)
+                  </div>
+                  <input
+                    value={swapRefundAddress}
+                    onChange={(e) => setSwapRefundAddress(e.target.value)}
+                    placeholder={`address on ${sellNetwork}`}
+                    className="hood-field"
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      borderBottom: `1px solid ${line}`,
+                      outline: "none",
+                      padding: "6px 0",
+                      fontSize: 13,
+                      fontFamily: "inherit",
+                      background: "transparent",
+                      color: ink,
+                    }}
+                  />
+                </div>
+              )}
+
               <div style={{ marginTop: 12, marginBottom: 4 }}>
-                <div style={{ fontSize: 11, color: gray, marginBottom: 4 }}>recipient wallet (optional)</div>
+                <div style={{ fontSize: 11, color: gray, marginBottom: 4 }}>
+                  {swapRecipientRequired ? "recipient address (required)" : "recipient wallet (optional)"}
+                </div>
                 <input
                   value={swapRecipient}
                   onChange={(e) => setSwapRecipient(e.target.value)}
-                  placeholder="defaults to your own wallet"
+                  placeholder={swapRecipientRequired ? `address on ${buyNetwork || "destination chain"}` : "defaults to your own wallet"}
                   className="hood-field"
                   style={{
                     width: "100%",
@@ -1414,6 +1562,15 @@ export default function App() {
                   }}
                 />
               </div>
+
+              {swapCanAutoSign && (
+                <div
+                  onClick={() => setSwapManualOverride(!swapManualOverride)}
+                  style={{ marginTop: 6, fontSize: 11, color: gray, cursor: "pointer", textDecoration: "underline" }}
+                >
+                  {swapManualOverride ? "[ use connected wallet instead ]" : "[ use a deposit address instead ]"}
+                </div>
+              )}
 
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 14, fontSize: 13 }}>
                 <span onClick={() => setSwapPriv(!swapPriv)} style={{ flexShrink: 0, cursor: "pointer" }}>
@@ -1640,6 +1797,31 @@ export default function App() {
                 )}
               </div>
 
+              {sendExecutionMode === "manual" && (
+                <div style={{ marginTop: 14, marginBottom: 4 }}>
+                  <div style={{ fontSize: 11, color: gray, marginBottom: 4 }}>
+                    your {sendNetwork} address (for refunds)
+                  </div>
+                  <input
+                    value={sendRefundAddress}
+                    onChange={(e) => setSendRefundAddress(e.target.value)}
+                    placeholder={`address on ${sendNetwork}`}
+                    className="hood-field"
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      borderBottom: `1px solid ${line}`,
+                      outline: "none",
+                      padding: "6px 0",
+                      fontSize: 13,
+                      fontFamily: "inherit",
+                      background: "transparent",
+                      color: ink,
+                    }}
+                  />
+                </div>
+              )}
+
               <div style={{ marginTop: 14, marginBottom: 12 }}>
                 <div style={{ fontSize: 11, color: gray, marginBottom: 4 }}>recipient</div>
                 <input
@@ -1660,6 +1842,15 @@ export default function App() {
                   }}
                 />
               </div>
+
+              {sendCanAutoSign && (
+                <div
+                  onClick={() => setSendManualOverride(!sendManualOverride)}
+                  style={{ marginTop: -6, marginBottom: 6, fontSize: 11, color: gray, cursor: "pointer", textDecoration: "underline" }}
+                >
+                  {sendManualOverride ? "[ use connected wallet instead ]" : "[ use a deposit address instead ]"}
+                </div>
+              )}
 
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 14, fontSize: 13 }}>
                 <span onClick={() => setPriv(!priv)} style={{ flexShrink: 0, cursor: "pointer" }}>
@@ -1716,7 +1907,7 @@ export default function App() {
             {mainButtonLabel}
           </button>
 
-          {mode === "swap" && swapStatus !== "idle" && (
+          {mode === "swap" && swapStatus !== "idle" && swapStatus !== "awaiting-deposit" && (
             <div style={{ marginTop: 8, fontSize: 11, color: swapStatus === "error" || swapStatus === "failed" ? "#B3261E" : gray }}>
               {(swapStatus === "error" || swapStatus === "failed" || swapStatus === "refunded") &&
                 (swapError || swapStatus)}
@@ -1738,7 +1929,21 @@ export default function App() {
             </div>
           )}
 
-          {mode === "send" && sendStatus !== "idle" && (
+          {mode === "swap" && swapStatus === "awaiting-deposit" && swapDepositAddress && (
+            <DepositPanel
+              address={swapDepositAddress}
+              amountLabel={sellAmt}
+              symbol={sellTok}
+              network={sellNetwork}
+              deadline={swapDepositDeadline}
+              ink={ink}
+              gray={gray}
+              line={line}
+              paper={paper}
+            />
+          )}
+
+          {mode === "send" && sendStatus !== "idle" && sendStatus !== "awaiting-deposit" && (
             <div style={{ marginTop: 8, fontSize: 11, color: sendStatus === "error" || sendStatus === "failed" ? "#B3261E" : gray }}>
               {(sendStatus === "error" || sendStatus === "failed" || sendStatus === "refunded") &&
                 (sendError || sendStatus)}
@@ -1758,6 +1963,20 @@ export default function App() {
                 </div>
               )}
             </div>
+          )}
+
+          {mode === "send" && sendStatus === "awaiting-deposit" && sendDepositAddress && (
+            <DepositPanel
+              address={sendDepositAddress}
+              amountLabel={sendAmt}
+              symbol={sendTok}
+              network={sendNetwork}
+              deadline={sendDepositDeadline}
+              ink={ink}
+              gray={gray}
+              line={line}
+              paper={paper}
+            />
           )}
         </div>
       </div>
@@ -1929,7 +2148,17 @@ export default function App() {
                   ? "connect a wallet to see the tokens you hold"
                   : ownedBalancesStatus === "loading"
                   ? "checking your wallet balances..."
+                  : tokenModalShowAll
+                  ? "showing all tokens"
                   : "showing only tokens held in your connected wallet"}
+                {isConnected && ownedBalancesStatus !== "loading" && (
+                  <span
+                    onClick={() => setTokenModalShowAll((v) => !v)}
+                    style={{ marginLeft: 8, cursor: "pointer", textDecoration: "underline" }}
+                  >
+                    {tokenModalShowAll ? "[ show only owned ]" : "[ show all tokens instead ]"}
+                  </span>
+                )}
               </div>
             )}
 
@@ -1944,11 +2173,11 @@ export default function App() {
               }}
             >
               <span>token</span>
-              <span>{ownedOnlyTarget && isConnected ? "amount / price" : "price"}</span>
+              <span>{ownedOnlyTarget && isConnected && !tokenModalShowAll ? "amount / price" : "price"}</span>
             </div>
 
             <div style={{ flex: 1, minHeight: 0, borderTop: `1px solid ${line}`, overflowY: "auto", padding: "4px 0" }}>
-              {ownedOnlyTarget && isConnected
+              {ownedOnlyTarget && isConnected && !tokenModalShowAll
                 ? (liveTokens || TOKEN_LIST)
                     .filter((t) => {
                       const bal = ownedBalances[`${t.symbol}|${t.network}`];
@@ -2054,6 +2283,48 @@ export default function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Manual-deposit instructions — shown once a real (dry:false) quote comes
+// back and there's no connected EVM wallet to auto-sign with. The user
+// sends from wherever they like; pollSwapStatus/pollSendStatus (already
+// chain-agnostic) picks it up the moment the deposit lands.
+function DepositPanel({ address, amountLabel, symbol, network, deadline, ink, gray, line, paper }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(address);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+
+  return (
+    <div style={{ marginTop: 10, border: `1px solid ${ink}`, background: paper, padding: 14 }}>
+      <div style={{ fontSize: 12 }}>
+        send exactly <strong>{amountLabel} {symbol}</strong> on <strong>{network}</strong> to:
+      </div>
+      <div
+        style={{
+          marginTop: 8,
+          padding: "8px 10px",
+          border: `1px solid ${line}`,
+          fontSize: 12,
+          wordBreak: "break-all",
+        }}
+      >
+        {address}
+      </div>
+      <div
+        onClick={copy}
+        style={{ marginTop: 8, fontSize: 11, cursor: "pointer", textDecoration: "underline", display: "inline-block" }}
+      >
+        {copied ? "[ copied ]" : "[ copy address ]"}
+      </div>
+      <div style={{ marginTop: 8, fontSize: 11, color: gray }}>
+        this page updates automatically once the deposit is seen — no need to reconnect or refresh.
+        {deadline && ` complete by ${new Date(deadline).toLocaleString()}.`}
+      </div>
     </div>
   );
 }
