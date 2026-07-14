@@ -1,6 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import { useAccount, useBalance, useChainId, useDisconnect } from "wagmi";
-import { getBalance, multicall, sendTransaction, writeContract, waitForTransactionReceipt } from "wagmi/actions";
+import {
+  getAccount,
+  getBalance,
+  multicall,
+  sendTransaction,
+  switchChain,
+  writeContract,
+  waitForTransactionReceipt,
+} from "wagmi/actions";
 import { formatUnits } from "viem";
 import { useAppKit } from "@reown/appkit/react";
 import { mainnet, base, optimism, polygon } from "@reown/appkit/networks";
@@ -76,6 +84,27 @@ const NATIVE_SYMBOL_BY_CHAIN = {
   [optimism.id]: "ETH",
   [polygon.id]: "POL",
 };
+
+const CHAIN_NAME_BY_ID = {
+  [mainnet.id]: "Ethereum",
+  [base.id]: "Base",
+  [optimism.id]: "Optimism",
+  [polygon.id]: "Polygon",
+};
+
+// Some mobile wallet connectors don't auto-switch the active chain when a
+// tx is sent with a differing chainId — they just reject with a mismatch
+// error instead. Ask up front so the wallet's own network-switch prompt
+// (or a clear message if it can't) shows before we try to sign anything.
+async function ensureChain(chainId) {
+  if (getAccount(wagmiConfig).chainId === chainId) return;
+  try {
+    await switchChain(wagmiConfig, { chainId });
+  } catch {
+    const name = CHAIN_NAME_BY_ID[chainId] || `chain ${chainId}`;
+    throw new Error(`switch your wallet to ${name} and try again`);
+  }
+}
 
 // "max" on a native token must leave room for gas — a conservative fixed
 // buffer rather than a live estimate, in the token's own units.
@@ -843,6 +872,7 @@ export default function App() {
         }
 
         setSendStatus("awaiting-signature");
+        await ensureChain(chainId);
         const amountBaseUnits = toBaseUnits(sendAmt, originToken.decimals ?? 18);
         const txHash = isNative
           ? await sendTransaction(wagmiConfig, { chainId, to: recipient, value: BigInt(amountBaseUnits) })
@@ -897,6 +927,7 @@ export default function App() {
       if (!depositAddress) throw new Error("no deposit address returned");
 
       setSendStatus("awaiting-signature");
+      await ensureChain(chainId);
 
       const txHash = isNative
         ? await sendTransaction(wagmiConfig, { chainId, to: depositAddress, value: BigInt(amountBaseUnits) })
@@ -1033,6 +1064,7 @@ export default function App() {
       if (!depositAddress) throw new Error("no deposit address returned");
 
       setSwapStatus("awaiting-signature");
+      await ensureChain(chainId);
 
       const isNative = NATIVE_SYMBOL_BY_CHAIN[chainId] === originToken.symbol;
       const txHash = isNative
