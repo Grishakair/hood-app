@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useAccount, useBalance, useChainId, useDisconnect } from "wagmi";
-import { getBalance, multicall, sendTransaction, writeContract } from "wagmi/actions";
+import { getBalance, multicall, sendTransaction, writeContract, waitForTransactionReceipt } from "wagmi/actions";
 import { formatUnits } from "viem";
 import { useAppKit } from "@reown/appkit/react";
 import { mainnet, base, optimism, polygon } from "@reown/appkit/networks";
@@ -45,6 +45,30 @@ const CHAIN_ID_BY_NETWORK = {
 // Shown first in the network filter chips — the chains wallet connect,
 // balances, and swap execution actually work on.
 const SUPPORTED_NETWORK_CODES = ["eth", "base", "op", "pol"];
+
+// Sort order for the buy/receive token list — the 1click API returns NEAR
+// tokens first just because of how it's indexed, not because they're most
+// relevant. This pushes well-known tokens on well-known chains to the top
+// instead, in a specific hand-picked order, then "popular symbol on popular
+// chain" generally, leaving everything else exactly where it already was.
+const PRIORITY_TOKEN_ORDER = [
+  { symbol: "USDC", network: "eth" },
+  { symbol: "USDC", network: "base" },
+  { symbol: "USDT", network: "eth" },
+  { symbol: "USDT", network: "base" },
+  { symbol: "ETH", network: "eth" },
+  { symbol: "ZEC", network: "zec" },
+];
+const POPULAR_TOKEN_SYMBOLS = ["USDC", "USDT", "ETH", "WETH", "POL", "BTC", "SOL"];
+const POPULAR_TOKEN_NETWORKS = ["eth", "base", "op", "pol"];
+
+function tokenSortRank(t) {
+  const net = t.network?.toLowerCase();
+  const exactIdx = PRIORITY_TOKEN_ORDER.findIndex((p) => p.symbol === t.symbol && p.network === net);
+  if (exactIdx !== -1) return exactIdx;
+  if (POPULAR_TOKEN_SYMBOLS.includes(t.symbol) && POPULAR_TOKEN_NETWORKS.includes(net)) return 100;
+  return 1000;
+}
 
 const NATIVE_SYMBOL_BY_CHAIN = {
   [mainnet.id]: "ETH",
@@ -235,6 +259,236 @@ function HoodMark({ size = 22, ink, paper }) {
   );
 }
 
+// Small line-art icons for the "how it works" illustrations — same
+// monochrome ink/paper duotone as HoodMark, kept intentionally simple.
+function CoinIcon({ ink, paper, size = 32 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40">
+      <circle cx="20" cy="20" r="17" fill={ink} />
+      <circle cx="20" cy="20" r="11" fill="none" stroke={paper} strokeWidth="1.6" strokeDasharray="3 3" />
+    </svg>
+  );
+}
+
+function WalletIcon({ ink, paper, size = 32 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40">
+      <rect x="4" y="10" width="32" height="22" rx="3" fill="none" stroke={ink} strokeWidth="2.4" />
+      <rect x="23" y="17.5" width="13" height="8" rx="1.6" fill={ink} />
+      <circle cx="29.5" cy="21.5" r="1.6" fill={paper} />
+    </svg>
+  );
+}
+
+function ChainIcon({ ink, size = 32 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40">
+      <circle cx="10" cy="12" r="5" fill="none" stroke={ink} strokeWidth="2.4" />
+      <circle cx="30" cy="12" r="5" fill="none" stroke={ink} strokeWidth="2.4" />
+      <circle cx="20" cy="30" r="5" fill="none" stroke={ink} strokeWidth="2.4" />
+      <line x1="14.5" y1="14" x2="25.5" y2="14" stroke={ink} strokeWidth="1.8" />
+      <line x1="12" y1="16.5" x2="18" y2="26" stroke={ink} strokeWidth="1.8" />
+      <line x1="28" y1="16.5" x2="22" y2="26" stroke={ink} strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function LockIcon({ ink, size = 32 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40">
+      <rect x="9" y="18" width="22" height="16" rx="2.4" fill="none" stroke={ink} strokeWidth="2.4" />
+      <path d="M14 18v-4a6 6 0 0 1 12 0v4" fill="none" stroke={ink} strokeWidth="2.4" />
+      <circle cx="20" cy="26" r="2" fill={ink} />
+    </svg>
+  );
+}
+
+const HOW_ICONS = { coin: CoinIcon, wallet: WalletIcon, chain: ChainIcon, lock: LockIcon };
+
+const HOW_LEVELS = [
+  {
+    key: 1,
+    label: "explain like I'm 7",
+    icons: ["coin", "hood", "coin"],
+    captions: ["your coin", "hood", "their coin"],
+    paragraphs: [
+      "Hood is a magic swap box for money-coins.",
+      "You put in one kind of coin. Hood finds someone who has the kind you want, and swaps them for you — safely, and fast.",
+      "You can also just send your coins straight to a friend, even turning them into a different coin along the way.",
+      "There's even a secret mode: it hides who's getting your coins, so nosy people can't peek.",
+    ],
+  },
+  {
+    key: 2,
+    label: "I know the basics",
+    icons: ["wallet", "hood", "chain"],
+    captions: ["your wallet", "hood", "any chain"],
+    paragraphs: [
+      "Connect your wallet — Ethereum, Base, Optimism, or Polygon all work.",
+      "Pick what you want to sell and what you want to buy. They don't have to be on the same blockchain — Hood is built on NEAR Intents, so it can route across chains for you.",
+      "You get a live quote, approve one transaction, and a network of solvers gets your funds converted and delivered.",
+      "You can also just send tokens to someone else — optionally converting to a different token for them along the way.",
+      '"make it private" routes the swap through Confidential Intents instead of the public rails, so the recipient\'s address isn\'t linked to yours on-chain.',
+    ],
+  },
+  {
+    key: 3,
+    label: "crypto OG",
+    icons: ["wallet", "chain", "lock"],
+    captions: ["deposit tx", "solver network", "confidential intents"],
+    paragraphs: [
+      "Hood is a thin UI over NEAR Intents, via Aurora's Intents API (intents-api.aurora.dev).",
+      "Requesting a swap gets a signed quote with a generated deposit address. You send the origin asset there in one on-chain tx from your connected wallet (wagmi sendTransaction/writeContract) — no approvals, just a direct transfer.",
+      "Aurora's solver network fulfills the intent and delivers the destination asset to the recipient/chain you specified. Status is polled via /api/status until SUCCESS, FAILED, or REFUNDED.",
+      'confidentiality: "basic" routes settlement through Confidential Intents rails instead of public ones — the deposit tx itself is still a normal public on-chain transfer, but the payout side is decoupled from it, so the recipient can\'t be linked back to your deposit.',
+      "Aurora takes an integrator fee (up to 100bps, split 60/40) baked into the quote.",
+    ],
+  },
+];
+
+// Deterministic pseudo-random in [0,1) — same trick as the balance/quote
+// helpers, kept local since it's only used for the ASCII illustration below.
+function asciiPseudoRandom(seed) {
+  const x = Math.sin(seed * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+const HOOD_ASCII_LIGHT = [".", ":", "'", ","];
+const HOOD_ASCII_MID = ["i", "r", "v", "x", "u", "n", "c", "l"];
+const HOOD_ASCII_HEAVY = ["B", "Q", "R", "8", "M", "W", "%", "#", "D"];
+
+// Half-width of an actual hoodie silhouette at a given height: a rounded
+// dome (the hood) that flares out to shoulders, then a roughly straight
+// body down to the hem. Returns 0 outside the garment entirely.
+// Point-in-rounded-rect test — a cheap stand-in for the real HoodMark bezier
+// path, good enough for a stylized character-art rendering.
+function insideRoundedRect(px, py, x0, y0, x1, y1, r) {
+  const nx = Math.min(Math.max(px, x0 + r), x1 - r);
+  const ny = Math.min(Math.max(py, y0 + r), y1 - r);
+  if (px >= x0 + r && px <= x1 - r && py >= y0 && py <= y1) return true;
+  if (py >= y0 + r && py <= y1 - r && px >= x0 && px <= x1) return true;
+  const dx = px - nx;
+  const dy = py - ny;
+  return dx * dx + dy * dy <= r * r;
+}
+
+function hoodEdgeDepth(px, py, x0, y0, x1, y1, r) {
+  const d = Math.min(py - y0, y1 - py, px - x0, x1 - px, r);
+  return Math.max(0, d) / r;
+}
+
+// Built once at module load (not per-render) — a grid of characters shaded
+// densest at the center and lightest near the silhouette's edge, with the
+// two eye-holes punched out, matching HoodMark's shape.
+const HOOD_ASCII_ROWS = (() => {
+  const cols = 84;
+  const rows = 50;
+  const x0 = 6,
+    y0 = 10,
+    x1 = 154,
+    y1 = 150,
+    r = 46;
+  const eyeR = 15;
+  const eyeLX = 58,
+    eyeLY = 76;
+  const eyeRX = 102,
+    eyeRY = 76;
+  const out = [];
+  for (let row = 0; row < rows; row++) {
+    let line = "";
+    for (let col = 0; col < cols; col++) {
+      const px = (col / (cols - 1)) * 160;
+      const py = (row / (rows - 1)) * 178;
+      const dEyeL = Math.hypot(px - eyeLX, py - eyeLY);
+      const dEyeR = Math.hypot(px - eyeRX, py - eyeRY);
+      const inside = insideRoundedRect(px, py, x0, y0, x1, y1, r) && dEyeL > eyeR && dEyeR > eyeR;
+      if (!inside) {
+        line += " ";
+        continue;
+      }
+      const depth = hoodEdgeDepth(px, py, x0, y0, x1, y1, r);
+      const rnd = asciiPseudoRandom(row * 1000 + col);
+      const set = depth < 0.12 ? HOOD_ASCII_LIGHT : depth < 0.4 ? HOOD_ASCII_MID : HOOD_ASCII_HEAVY;
+      line += set[Math.floor(rnd * set.length)];
+    }
+    out.push(line);
+  }
+  return out;
+})();
+
+// Used as a small centered footer flourish on the Hood club page — the
+// floating full-size version (bleeding off the right edge) didn't sit well
+// next to the rest of the UI's very sparse style, so it's retired to this
+// one, deliberate spot instead.
+function HoodAsciiArt({ ink }) {
+  return (
+    <pre
+      style={{
+        display: "inline-block",
+        margin: 0,
+        fontFamily: "'IBM Plex Mono', monospace",
+        fontSize: 6,
+        lineHeight: "6px",
+        color: ink,
+        opacity: 0.6,
+        userSelect: "none",
+      }}
+    >
+      {HOOD_ASCII_ROWS.join("\n")}
+    </pre>
+  );
+}
+
+function HowItWorks({ ink, gray, line, paper, howLevel, setHowLevel }) {
+  const level = HOW_LEVELS.find((l) => l.key === howLevel) || HOW_LEVELS[0];
+
+  return (
+    <div style={{ maxWidth: 420, margin: "0 auto" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 20 }}>
+        {HOW_LEVELS.map((l) => (
+          <span
+            key={l.key}
+            onClick={() => setHowLevel(l.key)}
+            style={{
+              fontSize: 12,
+              padding: "6px 10px",
+              border: `1px solid ${ink}`,
+              cursor: "pointer",
+              background: howLevel === l.key ? ink : "transparent",
+              color: howLevel === l.key ? paper : ink,
+            }}
+          >
+            [ {l.label} ]
+          </span>
+        ))}
+      </div>
+
+      <div style={{ border: `1px solid ${ink}`, background: paper, padding: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 18, marginBottom: 22 }}>
+          {level.icons.map((iconKey, i) => {
+            const Icon = iconKey === "hood" ? null : HOW_ICONS[iconKey];
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 18 }}>
+                <div style={{ textAlign: "center" }}>
+                  {iconKey === "hood" ? <HoodMark size={26} ink={ink} paper={paper} /> : <Icon ink={ink} paper={paper} />}
+                  <div style={{ fontSize: 10, color: gray, marginTop: 6, whiteSpace: "nowrap" }}>{level.captions[i]}</div>
+                </div>
+                {i < level.icons.length - 1 && <div style={{ fontSize: 14, color: gray }}>→</div>}
+              </div>
+            );
+          })}
+        </div>
+
+        {level.paragraphs.map((p, i) => (
+          <p key={i} style={{ fontSize: 13, lineHeight: 1.6, margin: i === 0 ? 0 : "12px 0 0" }}>
+            {p}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function WalletMenu({ address, ink, gray, line, paper, onClose }) {
   const chainId = useChainId();
   const { disconnect } = useDisconnect();
@@ -323,6 +577,7 @@ export default function App() {
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
 
   const [topTab, setTopTab] = useState("app"); // app | how | club
+  const [howLevel, setHowLevel] = useState(1);
   const [mode, setMode] = useState("swap");
   const [priv, setPriv] = useState(false);
   const [sellAmt, setSellAmt] = useState("");
@@ -332,6 +587,7 @@ export default function App() {
   const [buyNetwork, setBuyNetwork] = useState(null);
   const [buyAmount, setBuyAmount] = useState("");
   const [quoteStatus, setQuoteStatus] = useState("idle"); // idle | loading | ok | error
+  const [swapFeeBps, setSwapFeeBps] = useState(null);
   const [swapStatus, setSwapStatus] = useState("idle"); // idle | quoting | awaiting-signature | pending-deposit | processing | success | failed | refunded | error
   const [swapError, setSwapError] = useState("");
   const [swapTxHash, setSwapTxHash] = useState("");
@@ -346,6 +602,11 @@ export default function App() {
   const [sendAmt, setSendAmt] = useState("");
   const [sendTok, setSendTok] = useState("ETH");
   const [sendNetwork, setSendNetwork] = useState("eth");
+  const [sendStatus, setSendStatus] = useState("idle"); // idle | quoting | awaiting-signature | pending-deposit | processing | success | failed | refunded | error
+  const [sendError, setSendError] = useState("");
+  const [sendTxHash, setSendTxHash] = useState("");
+  const [sendStatusDetail, setSendStatusDetail] = useState("");
+  const sendPollToken = useRef(0);
   const [swapRecipient, setSwapRecipient] = useState("");
   const [swapPriv, setSwapPriv] = useState(false);
   const [slippage, setSlippage] = useState("0.5");
@@ -428,6 +689,7 @@ export default function App() {
 
     if (!originToken?.assetId || !destToken?.assetId || !amountNum || amountNum <= 0) {
       setBuyAmount("");
+      setSwapFeeBps(null);
       setQuoteStatus("idle");
       return;
     }
@@ -460,11 +722,14 @@ export default function App() {
         .then((data) => {
           if (cancelled) return;
           setBuyAmount(data.quote.amountOutFormatted);
+          const totalFeeBps = (data.quoteRequest?.appFees || []).reduce((sum, f) => sum + (f.fee || 0), 0);
+          setSwapFeeBps(totalFeeBps);
           setQuoteStatus("ok");
         })
         .catch(() => {
           if (!cancelled) {
             setBuyAmount("");
+            setSwapFeeBps(null);
             setQuoteStatus("error");
           }
         });
@@ -483,6 +748,191 @@ export default function App() {
     setSwapTxHash("");
     setSwapStatusDetail("");
   }, [sellAmt, sellTok, sellNetwork, buyTok, buyNetwork, swapPriv]);
+
+  useEffect(() => {
+    setSendStatus("idle");
+    setSendError("");
+    setSendTxHash("");
+    setSendStatusDetail("");
+  }, [sendAmt, sendTok, sendNetwork, recipient, priv, convertToken, receiveToken, receiveNetwork]);
+
+  function pollSendStatus(depositAddress) {
+    const token = ++sendPollToken.current;
+    const check = () => {
+      if (sendPollToken.current !== token) return;
+      fetch(`${AURORA_STATUS_URL}?depositAddress=${depositAddress}`)
+        .then((res) => {
+          if (!res.ok) throw new Error("status check failed");
+          return res.json();
+        })
+        .then((data) => {
+          if (sendPollToken.current !== token) return;
+          if (data.status === "SUCCESS") {
+            setSendStatus("success");
+            setSendStatusDetail("");
+          } else if (data.status === "FAILED") {
+            setSendStatus("failed");
+            setSendStatusDetail("");
+          } else if (data.status === "REFUNDED") {
+            setSendStatus("refunded");
+            setSendStatusDetail("");
+          } else {
+            setSendStatus("processing");
+            setSendStatusDetail(data.status);
+            setTimeout(check, 3000);
+          }
+        })
+        .catch(() => {
+          if (sendPollToken.current !== token) return;
+          setSendStatusDetail("waiting for the deposit to confirm on-chain...");
+          setTimeout(check, 5000);
+        });
+    };
+    check();
+  }
+
+  // Plain sends (no conversion, not private) skip the intents/quote system
+  // entirely — it's just a direct transfer to the recipient. Conversion or
+  // privacy both require routing through a deposit + Confidential Intents,
+  // same machinery as a swap, because a same-chain wallet transfer can't be
+  // made to hide the sender/recipient link on its own.
+  async function handleSend() {
+    if (!isConnected || !address) {
+      open();
+      return;
+    }
+    if (!recipient) {
+      setSendStatus("error");
+      setSendError("enter a recipient address");
+      return;
+    }
+    if (!sendAmt || Number(sendAmt) <= 0) {
+      setSendStatus("error");
+      setSendError("enter an amount to send");
+      return;
+    }
+
+    const originToken = findTokenRecord(liveTokens, sendTok, sendNetwork);
+    if (!originToken) {
+      setSendStatus("error");
+      setSendError("token data is still loading — try again in a moment");
+      return;
+    }
+
+    const destToken = convertToken ? findTokenRecord(liveTokens, receiveToken, receiveNetwork) : originToken;
+    if (convertToken && !destToken) {
+      setSendStatus("error");
+      setSendError("pick a token for the recipient to receive");
+      return;
+    }
+
+    const chainId = CHAIN_ID_BY_NETWORK[sendNetwork?.toLowerCase()];
+    if (!chainId) {
+      setSendStatus("error");
+      setSendError("this network isn't supported by the connected wallet yet");
+      return;
+    }
+
+    const needsIntents = priv || convertToken;
+    const isNative = NATIVE_SYMBOL_BY_CHAIN[chainId] === originToken.symbol;
+
+    try {
+      setSendError("");
+      setSendTxHash("");
+      setSendStatusDetail("");
+
+      if (!needsIntents) {
+        if (!isEvmAddress(recipient)) {
+          setSendStatus("error");
+          setSendError("enter a valid 0x recipient address for a direct send");
+          return;
+        }
+
+        setSendStatus("awaiting-signature");
+        const amountBaseUnits = toBaseUnits(sendAmt, originToken.decimals ?? 18);
+        const txHash = isNative
+          ? await sendTransaction(wagmiConfig, { chainId, to: recipient, value: BigInt(amountBaseUnits) })
+          : await writeContract(wagmiConfig, {
+              chainId,
+              address: originToken.contractAddress,
+              abi: ERC20_ABI,
+              functionName: "transfer",
+              args: [recipient, BigInt(amountBaseUnits)],
+            });
+
+        setSendTxHash(txHash);
+        setLastTxHash(txHash);
+        setLastTxChainId(chainId);
+        setSendStatus("processing");
+        setSendStatusDetail("confirming on-chain...");
+
+        await waitForTransactionReceipt(wagmiConfig, { chainId, hash: txHash });
+        setSendStatus("success");
+        setSendStatusDetail("");
+        return;
+      }
+
+      if (!originToken.assetId || !destToken?.assetId) {
+        setSendStatus("error");
+        setSendError("token data is still loading — try again in a moment");
+        return;
+      }
+
+      setSendStatus("quoting");
+      const amountBaseUnits = toBaseUnits(sendAmt, originToken.decimals);
+      const slippageBps = Math.round(Number(customSlippage || slippage) * 100);
+
+      const res = await fetch(AURORA_QUOTE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          buildQuoteBody({
+            dry: false,
+            originToken,
+            destToken,
+            amountBaseUnits,
+            slippageBps,
+            recipient,
+            confidential: priv,
+          })
+        ),
+      });
+      if (!res.ok) throw new Error("could not get a live quote");
+      const quoteData = await res.json();
+      const depositAddress = quoteData.quote?.depositAddress;
+      if (!depositAddress) throw new Error("no deposit address returned");
+
+      setSendStatus("awaiting-signature");
+
+      const txHash = isNative
+        ? await sendTransaction(wagmiConfig, { chainId, to: depositAddress, value: BigInt(amountBaseUnits) })
+        : await writeContract(wagmiConfig, {
+            chainId,
+            address: originToken.contractAddress,
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [depositAddress, BigInt(amountBaseUnits)],
+          });
+
+      setSendTxHash(txHash);
+      setLastTxHash(txHash);
+      setLastTxChainId(chainId);
+      setSendStatus("pending-deposit");
+
+      if (AURORA_DEPOSIT_SUBMIT_URL) {
+        fetch(AURORA_DEPOSIT_SUBMIT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ txHash, depositAddress }),
+        }).catch(() => {});
+      }
+
+      pollSendStatus(depositAddress);
+    } catch (err) {
+      setSendStatus("error");
+      setSendError(err?.shortMessage || err?.message || "send failed");
+    }
+  }
 
   function pollSwapStatus(depositAddress) {
     const token = ++swapPollToken.current;
@@ -627,21 +1077,32 @@ export default function App() {
 
   const swapBusy = ["quoting", "awaiting-signature", "pending-deposit", "processing"].includes(swapStatus);
   const swapButtonLabel =
-    mode !== "swap"
-      ? priv
-        ? "send privately"
-        : "send"
-      : {
-          quoting: "getting live quote...",
-          "awaiting-signature": "confirm in wallet...",
-          "pending-deposit": "sending deposit...",
-          processing: "processing swap...",
-          success: "swap complete — do another",
-          failed: "swap failed — try again",
-          refunded: "refunded — try again",
-          error: "try again",
-        }[swapStatus] ||
-        (!isConnected ? "connect wallet" : swapPriv ? "review private swap" : "review swap");
+    {
+      quoting: "getting live quote...",
+      "awaiting-signature": "confirm in wallet...",
+      "pending-deposit": "sending deposit...",
+      processing: "processing swap...",
+      success: "swap complete — do another",
+      failed: "swap failed — try again",
+      refunded: "refunded — try again",
+      error: "try again",
+    }[swapStatus] || (!isConnected ? "connect wallet" : swapPriv ? "review private swap" : "review swap");
+
+  const sendBusy = ["quoting", "awaiting-signature", "pending-deposit", "processing"].includes(sendStatus);
+  const sendButtonLabel =
+    {
+      quoting: "getting live quote...",
+      "awaiting-signature": "confirm in wallet...",
+      "pending-deposit": "sending deposit...",
+      processing: "processing...",
+      success: "sent — send another",
+      failed: "send failed — try again",
+      refunded: "refunded — try again",
+      error: "try again",
+    }[sendStatus] || (!isConnected ? "connect wallet" : priv ? "send privately" : "send");
+
+  const mainButtonLabel = mode === "swap" ? swapButtonLabel : sendButtonLabel;
+  const mainButtonBusy = mode === "swap" ? swapBusy : sendBusy;
 
   // "sell" and "send" both draw from your wallet — only "buy"/"receive" pick
   // an arbitrary token to acquire, so they show price instead of balance.
@@ -665,6 +1126,20 @@ export default function App() {
       usable = usable > reserveRaw ? usable - reserveRaw : 0n;
     }
     setSellAmt(truncateDecimalString(formatUnits(usable, decimals), decimals));
+  }
+
+  // Flips sell/buy — the quoted output becomes the new input, same as
+  // clicking the reverse arrow on any other swap UI.
+  function flipSwapTokens() {
+    const nextSellTok = buyTok;
+    const nextSellNetwork = buyNetwork;
+    const nextBuyTok = sellTok;
+    const nextBuyNetwork = sellNetwork;
+    setSellTok(nextSellTok);
+    setSellNetwork(nextSellNetwork);
+    setBuyTok(nextBuyTok);
+    setBuyNetwork(nextBuyNetwork);
+    setSellAmt(buyAmount || "");
   }
 
   const ink = "#0A0A0A";
@@ -707,16 +1182,21 @@ export default function App() {
           z-index: 5;
         }
         .hood-tip-wrap:hover .hood-tip { opacity: 1; }
+        .hood-card-scale { transform: scale(1.1); }
+        @media (max-width: 480px) { .hood-card-scale { transform: none; } }
+        @media (max-width: 560px) {
+          .hood-header-nav { order: 3; width: 100%; justify-content: center; gap: 14px; font-size: 12px; }
+        }
       `}</style>
 
       {/* header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 32px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", rowGap: 10, margin: "0 0 32px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }} onClick={() => setTopTab("app")}>
           <HoodMark size={28} ink={ink} paper={paper} />
-          <div style={{ fontSize: 20, letterSpacing: 2, fontWeight: 500 }}>Hood</div>
+          <div style={{ fontSize: 28, letterSpacing: 1, fontWeight: 500, lineHeight: 1 }}>Hood</div>
         </div>
 
-        <div style={{ display: "flex", gap: 20, fontSize: 13 }}>
+        <div className="hood-header-nav" style={{ display: "flex", gap: 20, fontSize: 13 }}>
           {[
             { key: "app", label: "Swap" },
             { key: "how", label: "How it work?" },
@@ -767,21 +1247,32 @@ export default function App() {
       </div>
 
       {topTab === "how" && (
-        <div style={{ maxWidth: 380, margin: "0 auto", border: `1px solid ${ink}`, background: paper, padding: 24, textAlign: "center", fontSize: 13, color: gray }}>
-          content coming soon
-        </div>
+        <HowItWorks ink={ink} gray={gray} line={line} paper={paper} howLevel={howLevel} setHowLevel={setHowLevel} />
       )}
 
       {topTab === "club" && (
-        <div style={{ maxWidth: 380, margin: "0 auto", border: `1px solid ${ink}`, background: paper, padding: 24, textAlign: "center", fontSize: 13, color: gray }}>
-          content coming soon
+        <div style={{ maxWidth: 420, margin: "0 auto" }}>
+          <div style={{ border: `1px solid ${ink}`, background: paper, padding: 32, textAlign: "center" }}>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
+              <HoodMark size={40} ink={ink} paper={paper} />
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>hood club is still getting ready.</div>
+            <p style={{ fontSize: 13, color: gray, lineHeight: 1.6, margin: 0 }}>no waitlist. no pre-sign-up. nothing to fill in.</p>
+            <p style={{ fontSize: 13, color: gray, lineHeight: 1.6, margin: "10px 0 0" }}>
+              just wait — when it's ready, the club will find you.
+            </p>
+          </div>
+          <div style={{ textAlign: "center", marginTop: 22 }}>
+            <HoodAsciiArt ink={ink} />
+          </div>
         </div>
       )}
 
       {topTab === "app" && (
       <>
       {/* card */}
-      <div style={{ maxWidth: 380, margin: "0 auto", border: `1px solid ${ink}`, background: paper }}>
+      <div style={{ maxWidth: 380, margin: "0 auto", paddingBottom: 40 }}>
+      <div className="hood-card-scale" style={{ border: `1px solid ${ink}`, background: paper, transformOrigin: "top center" }}>
         {/* tabs */}
         <div style={{ display: "flex", borderBottom: `1px solid ${ink}` }}>
           <div
@@ -832,6 +1323,7 @@ export default function App() {
                 gray={gray}
                 line={line}
                 ink={ink}
+                bold
               />
               {isConnected && (
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: gray, marginTop: 4 }}>
@@ -848,7 +1340,12 @@ export default function App() {
                   )}
                 </div>
               )}
-              <div style={{ textAlign: "center", fontSize: 12, color: gray, margin: "6px 0" }}>v</div>
+              <div
+                onClick={flipSwapTokens}
+                style={{ textAlign: "center", fontSize: 12, color: gray, margin: "6px 0", cursor: "pointer" }}
+              >
+                [ v ]
+              </div>
               <FieldRow
                 label="buy"
                 value=""
@@ -862,9 +1359,13 @@ export default function App() {
                 gray={gray}
                 line={line}
                 ink={ink}
+                bold
               />
               {quoteStatus === "error" && (
                 <div style={{ fontSize: 11, color: gray, marginTop: 2 }}>no route found for this pair</div>
+              )}
+              {quoteStatus === "ok" && swapFeeBps !== null && (
+                <div style={{ fontSize: 11, color: gray, marginTop: 2 }}>fee: {(swapFeeBps / 100).toFixed(2)}%</div>
               )}
 
               <div style={{ marginTop: 12, marginBottom: 4 }}>
@@ -1170,8 +1671,8 @@ export default function App() {
 
           <button
             className="hood-cta"
-            onClick={mode === "swap" ? handleSwap : undefined}
-            disabled={mode === "swap" && swapBusy}
+            onClick={mode === "swap" ? handleSwap : handleSend}
+            disabled={mainButtonBusy}
             style={{
               width: "100%",
               marginTop: 16,
@@ -1182,11 +1683,11 @@ export default function App() {
               fontFamily: "inherit",
               fontSize: 13,
               letterSpacing: 1,
-              cursor: mode === "swap" && swapBusy ? "default" : "pointer",
-              opacity: mode === "swap" && swapBusy ? 0.6 : 1,
+              cursor: mainButtonBusy ? "default" : "pointer",
+              opacity: mainButtonBusy ? 0.6 : 1,
             }}
           >
-            {swapButtonLabel}
+            {mainButtonLabel}
           </button>
 
           {mode === "swap" && swapStatus !== "idle" && (
@@ -1210,14 +1711,39 @@ export default function App() {
               )}
             </div>
           )}
+
+          {mode === "send" && sendStatus !== "idle" && (
+            <div style={{ marginTop: 8, fontSize: 11, color: sendStatus === "error" || sendStatus === "failed" ? "#B3261E" : gray }}>
+              {(sendStatus === "error" || sendStatus === "failed" || sendStatus === "refunded") &&
+                (sendError || sendStatus)}
+              {(sendStatus === "processing" || sendStatus === "pending-deposit") &&
+                (STATUS_DETAIL_LABEL[sendStatusDetail] || sendStatusDetail)}
+              {sendTxHash && (
+                <div>
+                  tx:{" "}
+                  <a
+                    href={`${EXPLORER_BY_CHAIN[CHAIN_ID_BY_NETWORK[sendNetwork?.toLowerCase()]] || "https://etherscan.io"}/tx/${sendTxHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "inherit" }}
+                  >
+                    {sendTxHash.slice(0, 10)}…
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
         </div>
+      </div>
       </div>
       </>
       )}
 
-      <div style={{ textAlign: "center", marginTop: 22, fontSize: 11, color: gray }}>
-        powered by near intents
-      </div>
+      {topTab !== "club" && (
+        <div style={{ textAlign: "center", marginTop: 22, fontSize: 11, color: gray }}>
+          powered by near intents
+        </div>
+      )}
 
       <div style={{ position: "fixed", left: 20, bottom: 20, display: "flex", alignItems: "flex-end", gap: 8, zIndex: 10 }}>
         <div style={{ border: `1px solid ${ink}`, background: paper, padding: "4px 7px", fontSize: 15, lineHeight: 1 }}>(•_•)</div>
@@ -1280,8 +1806,8 @@ export default function App() {
             style={{
               background: paper,
               border: `1px solid ${ink}`,
-              width: 340,
-              maxHeight: 480,
+              width: "min(340px, 92vw)",
+              maxHeight: "min(480px, 80vh)",
               display: "flex",
               flexDirection: "column",
             }}
@@ -1460,6 +1986,7 @@ export default function App() {
                         (networkFilter === "all" || t.network.toLowerCase() === networkFilter) &&
                         t.symbol.toLowerCase().includes(tokenSearch.toLowerCase())
                     )
+                    .sort((a, b) => tokenSortRank(a) - tokenSortRank(b))
                     .map((t, i) => (
                       <div
                         key={i}
@@ -1520,6 +2047,7 @@ function FieldRow({ label, value, onChange, token, placeholder = "0", selectToke
               border: "none",
               outline: "none",
               fontSize: 20,
+              fontWeight: bold ? 600 : 400,
               fontFamily: "inherit",
               background: "transparent",
               color: ink,
@@ -1527,7 +2055,7 @@ function FieldRow({ label, value, onChange, token, placeholder = "0", selectToke
             }}
           />
         ) : (
-          <span style={{ fontSize: 20, color: "#B9B6AB" }}>{placeholder}</span>
+          <span style={{ fontSize: 20, fontWeight: bold ? 600 : 400, color: "#B9B6AB" }}>{placeholder}</span>
         )}
         <span
           onClick={selectToken ? onSelectClick : undefined}

@@ -24,7 +24,14 @@
       "Bash(git config *)",
       "Bash(git --version)",
       "Bash(git init *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(npx --yes vercel --version)",
+      "Bash(grep -n \"import { getBalance, multicall, sendTransaction, writeContract }\" /Users/GK/Downloads/hood-app/src/App.jsx)",
+      "Bash(npx vercel *)",
+      "Bash(grep -n \"</div>\\\\s*$\" /Users/GK/Downloads/hood-app/src/App.jsx)",
+      "Bash(awk -F: '$1 > 1430 && $1 < 1445')",
+      "Bash(grep -n \"HoodMark size={28}\\\\|fontSize: 25, letterSpacing\" /Users/GK/Downloads/hood-app/src/App.jsx)"
     ]
   }
 }
