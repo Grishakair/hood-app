@@ -55,11 +55,13 @@ const CHAIN_ID_BY_NETWORK = {
 };
 
 // Shown first in the network filter chips — our highest-priority chains.
-// eth/base/bsc are wallet-connectable (auto-sign, see CHAIN_ID_BY_NETWORK);
-// tron isn't an EVM chain and always goes through the manual deposit-address
-// flow (see ensureChain/executionMode) — featured here anyway since it's a
-// heavily-used chain for USDT, just without the auto-sign convenience.
-const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "tron"];
+// Tron was tried here too, but real (non-dry) quotes for it fail 100% of
+// the time on Aurora's side right now (verified with 20+ requests across
+// pairs/amounts/directions — dry-preview rate estimates work fine, only
+// actual deposit-address generation is broken) — not something we can fix
+// on our end, so it stays demoted under "more" until that's resolved,
+// rather than featuring a route that can't currently complete.
+const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "pol"];
 
 // Sort order for the buy/receive token list — the 1click API returns NEAR
 // tokens first just because of how it's indexed, not because they're most
@@ -74,8 +76,8 @@ const PRIORITY_TOKEN_ORDER = [
   { symbol: "ETH", network: "eth" },
   { symbol: "ZEC", network: "zec" },
 ];
-const POPULAR_TOKEN_SYMBOLS = ["USDC", "USDT", "ETH", "WETH", "POL", "BTC", "SOL", "BNB", "TRX"];
-const POPULAR_TOKEN_NETWORKS = ["eth", "base", "bsc", "tron"];
+const POPULAR_TOKEN_SYMBOLS = ["USDC", "USDT", "ETH", "WETH", "POL", "BTC", "SOL", "BNB"];
+const POPULAR_TOKEN_NETWORKS = ["eth", "base", "bsc", "pol"];
 
 function tokenSortRank(t) {
   const net = t.network?.toLowerCase();
@@ -126,16 +128,34 @@ const GAS_RESERVE_NATIVE = {
 
 const isEvmAddress = (value) => /^0x[a-fA-F0-9]{40}$/.test(value || "");
 const isTronAddress = (value) => /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(value || "");
+const isSolanaAddress = (value) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value || "");
+const isNearAddress = (value) =>
+  /^(?=.{2,64}$)[a-z0-9_-]+(\.[a-z0-9_-]+)*\.(near|testnet)$/.test(value || "") || /^[0-9a-f]{64}$/.test(value || "");
+const isBitcoinAddress = (value) =>
+  /^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(value || "") || /^(bc1)[a-z0-9]{25,60}$/i.test(value || "");
+const isXrpAddress = (value) => /^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(value || "");
 
-// Catches the single most common mistake — pasting an address in the wrong
-// chain's format (e.g. an 0x address as a Tron recipient) — without trying
-// to fully validate every one of the other 30+ chains' formats.
+const ADDRESS_VALIDATOR_BY_NETWORK = {
+  tron: isTronAddress,
+  sol: isSolanaAddress,
+  near: isNearAddress,
+  btc: isBitcoinAddress,
+  xrp: isXrpAddress,
+};
+
+// Catches the most common (and most costly) mistake — pasting an address
+// in the wrong chain's format, e.g. an 0x address as a Solana or Tron
+// recipient. Has real format checks for the chains people actually use
+// most; for the rest of the 30+ chains we can't validate the exact
+// format, but an EVM-shaped address is never right for a non-EVM chain
+// either way, so that alone is always worth catching.
 function addressLooksWrongForChain(value, network) {
   const net = network?.toLowerCase();
   if (!value) return false;
-  if (net === "tron") return !isTronAddress(value);
+  const validator = ADDRESS_VALIDATOR_BY_NETWORK[net];
+  if (validator) return !validator(value);
   if (CHAIN_ID_BY_NETWORK[net]) return !isEvmAddress(value);
-  return false;
+  return isEvmAddress(value);
 }
 
 // Cuts (never rounds) a decimal string down to N places, so "max" amounts
@@ -226,7 +246,19 @@ async function fetchQuoteWithRetry(url, body, { retries = 3, delayMs = 500, isCa
   throw lastErr;
 }
 
-// balanceOf (read) + transfer (deposit funding) in one ABI.
+// Surfaces the API's own reason (e.g. "Failed to get quote" when a route
+// genuinely can't be filled right now) instead of a generic message, so
+// a real backend/liquidity issue doesn't look like "you did something
+// wrong" — the two need different next steps from the user.
+async function quoteErrorMessage(res) {
+  try {
+    const data = await res.json();
+    if (data?.message) return data.message;
+  } catch {
+    // response wasn't JSON — fall through to the generic message
+  }
+  return "could not get a live quote";
+}
 const ERC20_ABI = [
   {
     constant: true,
@@ -799,7 +831,12 @@ export default function App() {
     const placeholderFor = (token, typed) => {
       const chainId = CHAIN_ID_BY_NETWORK[token?.network?.toLowerCase()];
       if (chainId) return (isConnected && address) || "0x0000000000000000000000000000000000000000";
-      return token?.contractAddress || typed || null;
+      if (token?.contractAddress) return token.contractAddress;
+      // Native coin with no contract address to fall back on — only use
+      // what's typed if it's actually formatted right for this chain,
+      // otherwise it's better to idle than attempt a doomed request that
+      // shows up as a misleading "no route found".
+      return typed && !addressLooksWrongForChain(typed, token?.network) ? typed : null;
     };
     const refundPlaceholder = placeholderFor(originToken, swapRefundAddress);
     const recipientPlaceholder = placeholderFor(destToken, swapRecipient);
@@ -1062,7 +1099,7 @@ export default function App() {
           })
         ),
       });
-      if (!res.ok) throw new Error("could not get a live quote");
+      if (!res.ok) throw new Error(await quoteErrorMessage(res));
       const quoteData = await res.json();
       const depositAddress = quoteData.quote?.depositAddress;
       if (!depositAddress) throw new Error("no deposit address returned");
@@ -1235,7 +1272,7 @@ export default function App() {
           })
         ),
       });
-      if (!res.ok) throw new Error("could not get a live quote");
+      if (!res.ok) throw new Error(await quoteErrorMessage(res));
       const quoteData = await res.json();
       const depositAddress = quoteData.quote?.depositAddress;
       if (!depositAddress) throw new Error("no deposit address returned");
