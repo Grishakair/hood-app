@@ -1365,6 +1365,9 @@ export default function App() {
         @media (max-width: 560px) {
           .hood-header-nav { order: 3; width: 100%; justify-content: center; gap: 14px; font-size: 12px; }
         }
+        @media (max-width: 480px) {
+          .hood-mascot-wrap { position: static !important; margin: 28px auto 0; justify-content: center !important; }
+        }
       `}</style>
 
       {/* header */}
@@ -2028,7 +2031,7 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ position: "fixed", left: 20, bottom: 20, display: "flex", alignItems: "flex-end", gap: 8, zIndex: 10 }}>
+      <div className="hood-mascot-wrap" style={{ position: "fixed", left: 20, bottom: 20, display: "flex", alignItems: "flex-end", gap: 8, zIndex: 10 }}>
         <div style={{ border: `1px solid ${ink}`, background: paper, padding: "4px 7px", fontSize: 15, lineHeight: 1 }}>(•_•)</div>
         <div style={{ border: `1px solid ${ink}`, background: paper, padding: "8px 12px", fontSize: 11, maxWidth: 240 }}>
           send only funds, not information about yourself.
