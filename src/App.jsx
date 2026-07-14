@@ -10,6 +10,7 @@ import {
   waitForTransactionReceipt,
 } from "wagmi/actions";
 import { formatUnits } from "viem";
+import QRCode from "qrcode";
 import { useAppKit } from "@reown/appkit/react";
 import { mainnet, base, optimism, polygon } from "@reown/appkit/networks";
 import { wagmiConfig } from "./config/appkit.js";
@@ -633,6 +634,7 @@ export default function App() {
   const [swapRefundAddress, setSwapRefundAddress] = useState("");
   const [swapDepositAddress, setSwapDepositAddress] = useState("");
   const [swapDepositDeadline, setSwapDepositDeadline] = useState(null);
+  const [swapDepositTimeEstimate, setSwapDepositTimeEstimate] = useState(null);
   const [recipient, setRecipient] = useState("");
   const [sendAmt, setSendAmt] = useState("");
   const [sendTok, setSendTok] = useState("ETH");
@@ -646,6 +648,7 @@ export default function App() {
   const [sendRefundAddress, setSendRefundAddress] = useState("");
   const [sendDepositAddress, setSendDepositAddress] = useState("");
   const [sendDepositDeadline, setSendDepositDeadline] = useState(null);
+  const [sendDepositTimeEstimate, setSendDepositTimeEstimate] = useState(null);
   const [swapRecipient, setSwapRecipient] = useState("");
   const [swapPriv, setSwapPriv] = useState(false);
   const [slippage, setSlippage] = useState("0.5");
@@ -832,6 +835,7 @@ export default function App() {
     setSwapStatusDetail("");
     setSwapDepositAddress("");
     setSwapDepositDeadline(null);
+    setSwapDepositTimeEstimate(null);
   }, [sellAmt, sellTok, sellNetwork, buyTok, buyNetwork, swapPriv]);
 
   useEffect(() => {
@@ -841,6 +845,7 @@ export default function App() {
     setSendStatusDetail("");
     setSendDepositAddress("");
     setSendDepositDeadline(null);
+    setSendDepositTimeEstimate(null);
   }, [sendAmt, sendTok, sendNetwork, recipient, priv, convertToken, receiveToken, receiveNetwork]);
 
   function pollSendStatus(depositAddress) {
@@ -1005,6 +1010,7 @@ export default function App() {
       if (executionMode === "manual") {
         setSendDepositAddress(depositAddress);
         setSendDepositDeadline(quoteData.quote?.deadline || null);
+        setSendDepositTimeEstimate(quoteData.quote?.timeEstimate || null);
         setSendStatus("awaiting-deposit");
         pollSendStatus(depositAddress);
         return;
@@ -1165,6 +1171,7 @@ export default function App() {
       if (executionMode === "manual") {
         setSwapDepositAddress(depositAddress);
         setSwapDepositDeadline(quoteData.quote?.deadline || null);
+        setSwapDepositTimeEstimate(quoteData.quote?.timeEstimate || null);
         setSwapStatus("awaiting-deposit");
         pollSwapStatus(depositAddress);
         return;
@@ -1936,6 +1943,8 @@ export default function App() {
               symbol={sellTok}
               network={sellNetwork}
               deadline={swapDepositDeadline}
+              timeEstimate={swapDepositTimeEstimate}
+              statusDetail={swapStatusDetail}
               ink={ink}
               gray={gray}
               line={line}
@@ -1972,6 +1981,8 @@ export default function App() {
               symbol={sendTok}
               network={sendNetwork}
               deadline={sendDepositDeadline}
+              timeEstimate={sendDepositTimeEstimate}
+              statusDetail={sendStatusDetail}
               ink={ink}
               gray={gray}
               line={line}
@@ -2291,8 +2302,22 @@ export default function App() {
 // back and there's no connected EVM wallet to auto-sign with. The user
 // sends from wherever they like; pollSwapStatus/pollSendStatus (already
 // chain-agnostic) picks it up the moment the deposit lands.
-function DepositPanel({ address, amountLabel, symbol, network, deadline, ink, gray, line, paper }) {
+function DepositPanel({ address, amountLabel, symbol, network, deadline, timeEstimate, statusDetail, ink, gray, line, paper }) {
   const [copied, setCopied] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    QRCode.toDataURL(address, { width: 128, margin: 1, color: { dark: ink, light: paper } })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [address, ink, paper]);
+
   const copy = () => {
     navigator.clipboard.writeText(address);
     setCopied(true);
@@ -2301,28 +2326,52 @@ function DepositPanel({ address, amountLabel, symbol, network, deadline, ink, gr
 
   return (
     <div style={{ marginTop: 10, border: `1px solid ${ink}`, background: paper, padding: 14 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, border: `1px solid ${ink}`, padding: "6px 8px", marginBottom: 10 }}>
+        [ ! ] only send {symbol} on the {network} network to this address — any other token or chain may be
+        unrecoverable.
+      </div>
+
       <div style={{ fontSize: 12 }}>
         send exactly <strong>{amountLabel} {symbol}</strong> on <strong>{network}</strong> to:
       </div>
-      <div
-        style={{
-          marginTop: 8,
-          padding: "8px 10px",
-          border: `1px solid ${line}`,
-          fontSize: 12,
-          wordBreak: "break-all",
-        }}
-      >
-        {address}
+
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginTop: 8 }}>
+        {qrDataUrl && (
+          <img
+            src={qrDataUrl}
+            alt="deposit address QR code"
+            width={96}
+            height={96}
+            style={{ flexShrink: 0, border: `1px solid ${line}` }}
+          />
+        )}
+        <div
+          style={{
+            flex: 1,
+            padding: "8px 10px",
+            border: `1px solid ${line}`,
+            fontSize: 12,
+            wordBreak: "break-all",
+            alignSelf: "stretch",
+          }}
+        >
+          {address}
+        </div>
       </div>
+
       <div
         onClick={copy}
         style={{ marginTop: 8, fontSize: 11, cursor: "pointer", textDecoration: "underline", display: "inline-block" }}
       >
         {copied ? "[ copied ]" : "[ copy address ]"}
       </div>
+
       <div style={{ marginTop: 8, fontSize: 11, color: gray }}>
-        this page updates automatically once the deposit is seen — no need to reconnect or refresh.
+        {statusDetail ? STATUS_DETAIL_LABEL[statusDetail] || statusDetail : "waiting for the deposit to arrive..."}
+        {timeEstimate ? ` usually settles in ~${timeEstimate}s once received.` : ""}
+      </div>
+      <div style={{ marginTop: 4, fontSize: 11, color: gray }}>
+        this page updates automatically — no need to reconnect or refresh.
         {deadline && ` complete by ${new Date(deadline).toLocaleString()}.`}
       </div>
     </div>
