@@ -1481,6 +1481,14 @@ export default function App() {
               {label}
             </span>
           ))}
+          <a
+            href="https://x.com/hood_swap"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: gray, textDecoration: "none", paddingBottom: 2, borderBottom: "1px solid transparent" }}
+          >
+            X
+          </a>
         </div>
 
         <div style={{ position: "relative" }}>
