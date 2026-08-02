@@ -1,11 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { useAccount, useBalance, useChainId, useDisconnect } from "wagmi";
 import {
-  getAccount,
   getBalance,
   multicall,
   sendTransaction,
-  switchChain,
   writeContract,
   waitForTransactionReceipt,
 } from "wagmi/actions";
@@ -14,14 +12,25 @@ import QRCode from "qrcode";
 import { useAppKit } from "@reown/appkit/react";
 import { mainnet, base, optimism, polygon, bsc } from "@reown/appkit/networks";
 import { wagmiConfig } from "./config/appkit.js";
-
-const EXPLORER_BY_CHAIN = {
-  [mainnet.id]: "https://etherscan.io",
-  [base.id]: "https://basescan.org",
-  [optimism.id]: "https://optimistic.etherscan.io",
-  [polygon.id]: "https://polygonscan.com",
-  [bsc.id]: "https://bscscan.com",
-};
+import BorrowPanel from "./Borrow.jsx";
+import {
+  EXPLORER_BY_CHAIN,
+  CHAIN_ID_BY_NETWORK,
+  NATIVE_SYMBOL_BY_CHAIN,
+  CHAIN_NAME_BY_ID,
+  ensureChain,
+  truncateDecimalString,
+  AURORA_QUOTE_URL,
+  AURORA_DEPOSIT_SUBMIT_URL,
+  AURORA_STATUS_URL,
+  toBaseUnits,
+  findTokenRecord,
+  STATUS_DETAIL_LABEL,
+  buildQuoteBody,
+  fetchQuoteWithRetry,
+  quoteErrorMessage,
+  ERC20_ABI,
+} from "./lib/shared.js";
 
 // Fallback token metadata for the picker when the live 1click list can't be
 // fetched. No balances here — real balances only ever come from the
@@ -38,21 +47,6 @@ const TOKEN_LIST = [
 ];
 
 const NETWORK_CHIPS = ["all", "ethereum", "base", "optimism", "polygon", "near", "bitcoin"];
-
-// EVM chains we can actually read live balances for via wagmi. Keyed by both
-// the fallback list's names and the 1click API's short blockchain codes,
-// lowercased, since the two disagree ("Ethereum" vs "eth").
-const CHAIN_ID_BY_NETWORK = {
-  ethereum: mainnet.id,
-  eth: mainnet.id,
-  base: base.id,
-  optimism: optimism.id,
-  op: optimism.id,
-  polygon: polygon.id,
-  pol: polygon.id,
-  bsc: bsc.id,
-  bnb: bsc.id,
-};
 
 // Shown first in the network filter chips — our highest-priority chains.
 // Tron was tried here too, but real (non-dry) quotes for it fail 100% of
@@ -85,35 +79,6 @@ function tokenSortRank(t) {
   if (exactIdx !== -1) return exactIdx;
   if (POPULAR_TOKEN_SYMBOLS.includes(t.symbol) && POPULAR_TOKEN_NETWORKS.includes(net)) return 100;
   return 1000;
-}
-
-const NATIVE_SYMBOL_BY_CHAIN = {
-  [mainnet.id]: "ETH",
-  [base.id]: "ETH",
-  [optimism.id]: "ETH",
-  [polygon.id]: "POL",
-  [bsc.id]: "BNB",
-};
-
-const CHAIN_NAME_BY_ID = {
-  [mainnet.id]: "Ethereum",
-  [base.id]: "Base",
-  [optimism.id]: "Optimism",
-  [polygon.id]: "Polygon",
-};
-
-// Some mobile wallet connectors don't auto-switch the active chain when a
-// tx is sent with a differing chainId — they just reject with a mismatch
-// error instead. Ask up front so the wallet's own network-switch prompt
-// (or a clear message if it can't) shows before we try to sign anything.
-async function ensureChain(chainId) {
-  if (getAccount(wagmiConfig).chainId === chainId) return;
-  try {
-    await switchChain(wagmiConfig, { chainId });
-  } catch {
-    const name = CHAIN_NAME_BY_ID[chainId] || `chain ${chainId}`;
-    throw new Error(`switch your wallet to ${name} and try again`);
-  }
 }
 
 // "max" on a native token must leave room for gas — a conservative fixed
@@ -157,129 +122,6 @@ function addressLooksWrongForChain(value, network) {
   if (CHAIN_ID_BY_NETWORK[net]) return !isEvmAddress(value);
   return isEvmAddress(value);
 }
-
-// Cuts (never rounds) a decimal string down to N places, so "max" amounts
-// can never end up asking to spend more than the wallet actually holds.
-function truncateDecimalString(value, maxDecimals) {
-  const [whole, frac = ""] = value.split(".");
-  if (!frac) return whole;
-  const trimmed = frac.slice(0, maxDecimals);
-  return trimmed ? `${whole}.${trimmed}` : whole;
-}
-
-const AURORA_API_KEY = import.meta.env.VITE_AURORA_API_KEY;
-const AURORA_QUOTE_URL = AURORA_API_KEY ? `https://intents-api.aurora.dev/api/quote/${AURORA_API_KEY}` : null;
-const AURORA_DEPOSIT_SUBMIT_URL = AURORA_API_KEY ? `https://intents-api.aurora.dev/api/deposit/submit/${AURORA_API_KEY}` : null;
-const AURORA_STATUS_URL = AURORA_API_KEY ? `https://intents-api.aurora.dev/api/status/${AURORA_API_KEY}` : null;
-
-// Converts a decimal amount string ("1.5") to the token's smallest-unit
-// integer string, without floating-point rounding error.
-function toBaseUnits(amountStr, decimals) {
-  const [whole, frac = ""] = amountStr.split(".");
-  const paddedFrac = (frac + "0".repeat(decimals)).slice(0, decimals);
-  const digits = `${whole}${paddedFrac}`.replace(/^0+(?=\d)/, "");
-  return digits || "0";
-}
-
-function findTokenRecord(tokens, symbol, network) {
-  if (!tokens || !symbol || !network) return null;
-  return tokens.find((t) => t.symbol === symbol && t.network === network) || null;
-}
-
-const STATUS_DETAIL_LABEL = {
-  KNOWN_DEPOSIT_TX: "deposit seen, waiting for confirmations...",
-  PENDING_DEPOSIT: "waiting for the deposit to arrive...",
-  INCOMPLETE_DEPOSIT: "deposit received is below the required amount",
-  PROCESSING: "deposit confirmed — swapping now...",
-};
-
-function buildQuoteBody({ dry, originToken, destToken, amountBaseUnits, slippageBps, recipient, refundTo, confidential }) {
-  return {
-    dry,
-    swapType: "EXACT_INPUT",
-    depositType: "ORIGIN_CHAIN",
-    amount: amountBaseUnits,
-    originAsset: originToken.assetId,
-    destinationAsset: destToken.assetId,
-    slippageTolerance: slippageBps,
-    // refundTo lives on the ORIGIN chain, recipient on the DESTINATION chain —
-    // only the same value when a connected EVM wallet is signing both sides.
-    // Falls back to recipient for the dry-preview call site, which never had
-    // a separate refund address to begin with.
-    refundTo: refundTo ?? recipient,
-    refundType: "ORIGIN_CHAIN",
-    recipient,
-    recipientType: "DESTINATION_CHAIN",
-    // Confidential Intents rails — recipient stays hidden from the
-    // counterparty and onlookers. Available as of writing via "basic"/"advanced".
-    confidentiality: confidential ? "basic" : "public",
-  };
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// The dry-quote endpoint occasionally fails transiently — the solver
-// network taking a moment, not an actual absence of a route — and without
-// a retry that shows up to the user as "no route found" for a split
-// second before the very next quote succeeds. Retry a couple of times
-// before surfacing an error, so a live-preview blip doesn't get shown as
-// if it were real.
-async function fetchQuoteWithRetry(url, body, { retries = 3, delayMs = 500, isCancelled } = {}) {
-  let lastErr;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    if (isCancelled?.()) throw new Error("cancelled");
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error("quote failed");
-      return await res.json();
-    } catch (err) {
-      lastErr = err;
-      if (attempt < retries) await sleep(delayMs);
-    }
-  }
-  throw lastErr;
-}
-
-// Surfaces the API's own reason (e.g. "Failed to get quote" when a route
-// genuinely can't be filled right now) instead of a generic message, so
-// a real backend/liquidity issue doesn't look like "you did something
-// wrong" — the two need different next steps from the user.
-async function quoteErrorMessage(res) {
-  try {
-    const data = await res.json();
-    if (data?.message) return data.message;
-  } catch {
-    // response wasn't JSON — fall through to the generic message
-  }
-  return "could not get a live quote";
-}
-const ERC20_ABI = [
-  {
-    constant: true,
-    inputs: [{ name: "_owner", type: "address" }],
-    name: "balanceOf",
-    outputs: [{ name: "balance", type: "uint256" }],
-    type: "function",
-    stateMutability: "view",
-  },
-  {
-    constant: false,
-    inputs: [
-      { name: "_to", type: "address" },
-      { name: "_value", type: "uint256" },
-    ],
-    name: "transfer",
-    outputs: [{ name: "", type: "bool" }],
-    type: "function",
-    stateMutability: "nonpayable",
-  },
-];
 
 // Buy/receive pickers always show price — never a wallet balance. Only the
 // sell picker cares what you hold (see the batched fetch in App below).
@@ -350,27 +192,13 @@ async function fetchOwnedBalances(tokens, address) {
 
 function HoodMark({ size = 22, ink, paper }) {
   return (
-    <svg width={size} height={size * (178 / 160)} viewBox="0 0 160 178" style={{ display: "block" }}>
+    <svg width={size} height={size} viewBox="0 0 160 160" style={{ display: "block" }}>
       <path
-        d="M80 16C124 16 150 44.3224 150 80.1975V110.408C150 148.171 116 144.395 80 144.395C44 144.395 10 148.171 10 110.408V80.1975C10 44.3224 36 16 80 16Z"
+        d="M 80 12 C 42 12 18 36 18 68 L 18 108 C 18 126 28 138 48 140 L 112 140 C 132 138 142 126 142 108 L 142 68 C 142 36 118 12 80 12 Z"
         fill={ink}
       />
-      <path
-        d="M58 90C65.732 90 72 83.732 72 76C72 68.268 65.732 62 58 62C50.268 62 44 68.268 44 76C44 83.732 50.268 90 58 90Z"
-        fill={paper}
-      />
-      <path
-        d="M102 90C109.732 90 116 83.732 116 76C116 68.268 109.732 62 102 62C94.268 62 88 68.268 88 76C88 83.732 94.268 90 102 90Z"
-        fill={paper}
-      />
-      <path
-        d="M58 81.5C61.0376 81.5 63.5 79.0376 63.5 76C63.5 72.9624 61.0376 70.5 58 70.5C54.9624 70.5 52.5 72.9624 52.5 76C52.5 79.0376 54.9624 81.5 58 81.5Z"
-        fill={ink}
-      />
-      <path
-        d="M102 81.5C105.038 81.5 107.5 79.0376 107.5 76C107.5 72.9624 105.038 70.5 102 70.5C98.9624 70.5 96.5 72.9624 96.5 76C96.5 79.0376 98.9624 81.5 102 81.5Z"
-        fill={ink}
-      />
+      <circle cx="55" cy="78" r="16" fill={paper} />
+      <circle cx="105" cy="78" r="16" fill={paper} />
     </svg>
   );
 }
@@ -1423,7 +1251,7 @@ export default function App() {
       }}
     >
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
         .hood-field::placeholder { color: #B9B6AB; }
         .hood-tab { cursor: pointer; }
         .hood-cta:hover { background: ${ink} !important; color: ${paper} !important; }
@@ -1458,13 +1286,13 @@ export default function App() {
       {/* header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", rowGap: 10, margin: "0 0 32px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }} onClick={() => setTopTab("app")}>
-          <HoodMark size={28} ink={ink} paper={paper} />
-          <div style={{ fontSize: 28, letterSpacing: 1, fontWeight: 500, lineHeight: 1 }}>Hood</div>
+          <div style={{ fontSize: 28, fontWeight: 600, lineHeight: 1 }}>[hood]</div>
         </div>
 
         <div className="hood-header-nav" style={{ display: "flex", gap: 20, fontSize: 13 }}>
           {[
             { key: "app", label: "Swap" },
+            { key: "borrow", label: "Borrow" },
             { key: "how", label: "How it work?" },
             { key: "club", label: "Hood club" },
           ].map(({ key, label }) => (
@@ -1540,6 +1368,21 @@ export default function App() {
             <HoodAsciiArt ink={ink} />
           </div>
         </div>
+      )}
+
+      {topTab === "borrow" && (
+        <BorrowPanel
+          ink={ink}
+          gray={gray}
+          line={line}
+          paper={paper}
+          liveTokens={liveTokens}
+          ownedBalances={ownedBalances}
+          ownedBalancesStatus={ownedBalancesStatus}
+          isConnected={isConnected}
+          address={address}
+          open={open}
+        />
       )}
 
       {topTab === "app" && (
@@ -2198,12 +2041,6 @@ export default function App() {
               <span onClick={() => setTokenModalOpen(false)} style={{ cursor: "pointer", fontSize: 14 }}>
                 [ x ]
               </span>
-            </div>
-
-            <div style={{ flexShrink: 0, padding: "8px 16px 0", fontSize: 10, color: gray }}>
-              {liveTokensStatus === "loading" && "fetching live token list..."}
-              {liveTokensStatus === "live" && `live from 1click api — ${liveTokens.length} tokens`}
-              {liveTokensStatus === "offline" && "offline — showing demo data"}
             </div>
 
             <div style={{ flexShrink: 0, padding: "12px 16px 8px" }}>
