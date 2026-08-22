@@ -168,8 +168,10 @@ export default function MonadFlow() {
   // the wallet address instead; the balance behind it is real Aave
   // collateral on Monad mainnet.
   const [demoCard, setDemoCard] = useState(null); // { pan, expiry, cvv }
-  const [paymentStatus, setPaymentStatus] = useState("idle"); // idle | running | done
-  const [paymentMessage, setPaymentMessage] = useState("");
+  // Which action panel is open below the card — only "deposit" has a form;
+  // withdraw/cashback/invite are single-click actions with no panel.
+  const [activePanel, setActivePanel] = useState("deposit");
+  const [placeholderNote, setPlaceholderNote] = useState("");
   const [manualRefundAddress, setManualRefundAddress] = useState("");
   const [manualDeposit, setManualDeposit] = useState(null); // { address, amount, symbol }
 
@@ -664,19 +666,6 @@ export default function MonadFlow() {
     setCardRevealed(true);
   }
 
-  // No real card network sits behind this — Immersve's sandbox card
-  // issuance is unreachable (see the demoCard comment above), so this is a
-  // purely cosmetic proof that the balance can be "spent", not a real
-  // authorization/clearing.
-  async function handleSimulatePayment() {
-    setPaymentStatus("running");
-    setPaymentMessage("");
-    await new Promise((r) => setTimeout(r, 900));
-    const amount = Math.min(depositDisplay, 4.2).toFixed(2);
-    setPaymentMessage(`$${amount} simulated charge — Hood Demo Merchant`);
-    setPaymentStatus("done");
-  }
-
   const depositing = depositStatus === "running";
   const withdrawing = withdrawStatus === "running";
 
@@ -803,26 +792,6 @@ export default function MonadFlow() {
                   <div>{cardRevealed && demoCard ? demoCard.cvv : "•••"}</div>
                 </div>
               </div>
-              <button
-                className="mf-cta"
-                onClick={handleSimulatePayment}
-                disabled={paymentStatus === "running"}
-                style={{
-                  marginTop: 14,
-                  border: `1px solid ${paper}`,
-                  background: "transparent",
-                  color: paper,
-                  fontFamily: "inherit",
-                  fontSize: 11,
-                  padding: "6px 12px",
-                  cursor: paymentStatus === "running" ? "default" : "pointer",
-                }}
-              >
-                {paymentStatus === "running" ? "processing..." : "[ simulate payment ]"}
-              </button>
-              {paymentStatus === "done" && paymentMessage && (
-                <div style={{ fontSize: 10, opacity: 0.7, marginTop: 6 }}>✓ {paymentMessage}</div>
-              )}
             </>
           )}
         </div>
@@ -840,39 +809,64 @@ export default function MonadFlow() {
 
         {isConnected && (
           <div style={{ border: `1px solid ${ink}`, background: paper, padding: 16 }}>
-          {hasSupplied && (
-            <div style={{ marginBottom: 16, paddingBottom: 14, borderBottom: `1px solid ${line}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontSize: 12 }}>
-                deposit <strong>~${depositDisplay.toFixed(2)}</strong>
-              </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+            {[
+              {
+                key: "deposit",
+                icon: "↑",
+                label: "deposit",
+                onClick: () => setActivePanel((v) => (v === "deposit" ? null : "deposit")),
+                active: activePanel === "deposit",
+              },
+              {
+                key: "withdraw",
+                icon: withdrawing ? "…" : "↓",
+                label: "withdraw",
+                onClick: handleWithdraw,
+                disabled: !hasSupplied || withdrawing,
+              },
+              {
+                key: "cashback",
+                icon: "%",
+                label: "cashback",
+                onClick: () => setPlaceholderNote("claiming cashback is coming soon."),
+                disabled: !hasSupplied,
+              },
+              {
+                key: "invite",
+                icon: "+1",
+                label: "invite",
+                onClick: () => setPlaceholderNote("invite links are coming soon."),
+              },
+            ].map((b) => (
               <button
+                key={b.key}
                 className="mf-cta"
-                onClick={handleWithdraw}
-                disabled={withdrawing}
-                title="withdraw to wallet"
+                onClick={b.onClick}
+                disabled={b.disabled}
                 style={{
-                  width: 34,
-                  height: 34,
-                  flexShrink: 0,
-                  border: `1px solid ${ink}`,
-                  background: "transparent",
-                  color: ink,
-                  fontFamily: "inherit",
-                  fontSize: 16,
-                  cursor: "pointer",
-                  opacity: withdrawing ? 0.6 : 1,
                   display: "flex",
+                  flexDirection: "column",
                   alignItems: "center",
-                  justifyContent: "center",
+                  gap: 4,
+                  border: `1px solid ${ink}`,
+                  background: b.active ? ink : "transparent",
+                  color: b.active ? paper : b.disabled ? gray : ink,
+                  fontFamily: "inherit",
+                  padding: "10px 4px",
+                  cursor: b.disabled ? "not-allowed" : "pointer",
+                  opacity: b.disabled ? 0.5 : 1,
                 }}
               >
-                {withdrawing ? "…" : "↓"}
+                <span style={{ fontSize: 15 }}>{b.icon}</span>
+                <span style={{ fontSize: 10 }}>{b.label}</span>
               </button>
-            </div>
-          )}
-          {withdrawStatus === "error" && withdrawError && <div style={{ fontSize: 11, color: "#B3261E", marginBottom: 14 }}>{withdrawError}</div>}
-          {true && (
-            <>
+            ))}
+          </div>
+          {withdrawStatus === "error" && withdrawError && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 14 }}>{withdrawError}</div>}
+          {placeholderNote && <div style={{ fontSize: 11, color: gray, marginTop: 14 }}>{placeholderNote}</div>}
+          {activePanel === "deposit" && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${line}` }}>
               <div style={{ fontSize: 11, color: gray, fontWeight: 600, marginBottom: 6 }}>deposit — choose a token</div>
               <div
                 onClick={() => setPickerOpen((v) => !v)}
@@ -1025,7 +1019,7 @@ export default function MonadFlow() {
               })()}
               {depositStatus === "error" && depositError && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>{depositError}</div>}
               {marketStatus === "error" && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>could not load Aave's Monad market — try refreshing.</div>}
-            </>
+            </div>
           )}
 
           {lastTx && (
