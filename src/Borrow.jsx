@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { writeContract, waitForTransactionReceipt, readContract } from "wagmi/actions";
+import { writeContract, sendTransaction, waitForTransactionReceipt, readContract } from "wagmi/actions";
 import { formatUnits } from "viem";
 import { mainnet, base, bsc, polygon, monad } from "@reown/appkit/networks";
 import { wagmiConfig } from "./config/appkit.js";
 import {
   EXPLORER_BY_CHAIN,
   CHAIN_ID_BY_NETWORK,
+  NATIVE_SYMBOL_BY_CHAIN,
   ensureChain,
   truncateDecimalString,
   toBaseUnits,
@@ -229,9 +230,14 @@ export default function BorrowPanel({
   address,
   open,
 }) {
-  const [collateralNetwork, setCollateralNetwork] = useState("base");
+  // Defaults to USDC — the fast path — but any token the wallet holds on
+  // any EVM chain we can sign for is a valid collateral input; Intents
+  // Connect swaps+delivers it as USDC on the Aave chain in the same step.
+  const [collateralToken, setCollateralToken] = useState({ symbol: "USDC", network: "base" });
   const [collateralTouched, setCollateralTouched] = useState(false);
   const [collateralAmount, setCollateralAmount] = useState("");
+  const [tokenPickerOpen, setTokenPickerOpen] = useState(false);
+  const [tokenSearch, setTokenSearch] = useState("");
   const [borrowAmount, setBorrowAmount] = useState("");
   const [privateBridge, setPrivateBridge] = useState(false);
 
@@ -271,7 +277,8 @@ export default function BorrowPanel({
   }, []);
 
   // Defaults collateral to whichever chain already holds the most USDC —
-  // but only until the user picks a chain chip themselves.
+  // but only until the user picks a chain chip (or a different token)
+  // themselves.
   useEffect(() => {
     if (collateralTouched || ownedBalancesStatus !== "ready") return;
     let best = null;
@@ -283,7 +290,7 @@ export default function BorrowPanel({
         best = network;
       }
     }
-    if (best) setCollateralNetwork(best);
+    if (best) setCollateralToken({ symbol: "USDC", network: best });
   }, [ownedBalances, ownedBalancesStatus, collateralTouched]);
 
   // A previous attempt's progress only stays valid for resuming ("try
@@ -294,10 +301,10 @@ export default function BorrowPanel({
     setRunStatus("idle");
     setRunError("");
     setRunLog([]);
-  }, [collateralAmount, collateralNetwork, borrowAmount, selectedNetwork, receiveNetwork]);
+  }, [collateralAmount, collateralToken.symbol, collateralToken.network, borrowAmount, selectedNetwork, receiveNetwork]);
 
-  const collateralTokenRecord = findTokenRecord(liveTokens, "USDC", collateralNetwork);
-  const collateralBalanceRaw = ownedBalances[`USDC|${collateralNetwork}`];
+  const collateralTokenRecord = findTokenRecord(liveTokens, collateralToken.symbol, collateralToken.network);
+  const collateralBalanceRaw = ownedBalances[`${collateralToken.symbol}|${collateralToken.network}`];
   const collateralDecimals = collateralTokenRecord?.decimals ?? 6;
   const collateralBalanceFormatted =
     isConnected && collateralBalanceRaw !== undefined
@@ -314,25 +321,51 @@ export default function BorrowPanel({
   const bestNetwork = eligibleRates.length ? [...eligibleRates].sort((a, b) => a.borrowApy - b.borrowApy)[0].network : null;
   const activeNetwork = selectedNetwork || bestNetwork;
   const activeRate = (rates || []).find((r) => r.network === activeNetwork) || null;
-  const crossChain = Boolean(activeRate?.eligible && collateralNetwork !== activeNetwork);
+  // Not just "cross-chain" any more — depositing anything other than USDC
+  // already-on-the-Aave-chain needs an Intents Connect swap+delivery leg
+  // first, same-chain-different-asset included.
+  const needsSwap = Boolean(
+    activeRate?.eligible && (collateralToken.symbol !== "USDC" || collateralToken.network !== activeNetwork)
+  );
   const borrowSymbol = activeRate?.borrowAsset?.symbol || "ETH";
   const insufficientLiquidity = Boolean(
     activeRate?.eligible && borrowAmount && Number(borrowAmount) > 0 && Number(borrowAmount) > activeRate.liquidity
   );
 
   // How much of the borrow asset this collateral actually supports, straight
-  // from Aave's own max LTV + live USD prices for the two reserves — not a
-  // guess. A 15% haircut off the true max keeps some room below the
-  // liquidation threshold (interest accrues, prices move) rather than
-  // handing back a number that's one bad tick from getting liquidated.
+  // from Aave's own max LTV + live USD prices — not a guess. Uses the
+  // collateral token's own live price (from the 1click list) rather than
+  // assuming it's USDC, since the deposit might be swapped from anything.
+  // A 15% haircut off the true max keeps some room below the liquidation
+  // threshold (interest accrues, prices move, and a swap has slippage)
+  // rather than handing back a number that's one bad tick from getting
+  // liquidated.
   const collateralAmountNum = Number(collateralAmount) || 0;
+  const collateralUsdValue = collateralAmountNum * (collateralTokenRecord?.price ?? 0);
   const maxBorrowAmount =
-    activeRate?.eligible && collateralAmountNum > 0
-      ? (collateralAmountNum * activeRate.collateralAsset.usdPrice * activeRate.collateralAsset.maxLtv) /
-        activeRate.borrowAsset.usdPrice
+    activeRate?.eligible && collateralUsdValue > 0
+      ? (collateralUsdValue * activeRate.collateralAsset.maxLtv) / activeRate.borrowAsset.usdPrice
       : null;
   const safeBorrowAmount = maxBorrowAmount !== null ? maxBorrowAmount * 0.85 : null;
   const overMaxLtv = Boolean(maxBorrowAmount !== null && borrowAmount && Number(borrowAmount) > maxBorrowAmount);
+
+  // Owned-token options for the "deposit a different token" picker — any
+  // EVM-chain token this wallet actually holds, ranked by USD value so the
+  // biggest bag surfaces first. Restricted to chains we can sign a tx on
+  // (CHAIN_ID_BY_NETWORK) since this flow always self-executes, unlike
+  // Swap's manual-deposit fallback.
+  const ownedTokenOptions = (liveTokens || [])
+    .filter((t) => CHAIN_ID_BY_NETWORK[t.network?.toLowerCase()])
+    .map((t) => {
+      const bal = ownedBalances[`${t.symbol}|${t.network}`];
+      if (bal === undefined || bal <= 0n) return null;
+      const amountNum = Number(formatUnits(bal, t.decimals ?? 18));
+      return { symbol: t.symbol, network: t.network, amountNum, usdValue: amountNum * (t.price || 0) };
+    })
+    .filter(Boolean)
+    .filter((t) => !tokenSearch || t.symbol.toLowerCase().includes(tokenSearch.toLowerCase()))
+    .sort((a, b) => b.usdValue - a.usdValue)
+    .slice(0, 20);
 
   // borrow() always pays out on the chain you borrowed on — moving it
   // elsewhere afterward is a second, separate bridge leg, only possible
@@ -368,7 +401,7 @@ export default function BorrowPanel({
       return;
     }
 
-    const originNetwork = collateralNetwork;
+    const originNetwork = collateralToken.network;
     const destNetwork = activeNetwork;
     const originChainId = CHAIN_ID_BY_NETWORK[originNetwork];
     const destChainId = CHAIN_ID_BY_NETWORK[destNetwork];
@@ -379,21 +412,25 @@ export default function BorrowPanel({
     const deliverNetwork = receiveNetworkEffective;
 
     // "try again" after a mid-flow failure must resume, not restart — the
-    // bridge leg already moved real funds, and supply() empties the wallet
-    // it drew from, so blindly re-running every step would either double-
-    // spend the bridge or revert on an already-drained balance. The inputs
-    // haven't changed since (see the reset effect below), so a step marked
-    // "done" in the previous attempt is still valid now.
+    // swap/bridge leg already moved real funds, and supply() empties the
+    // wallet it drew from, so blindly re-running every step would either
+    // double-spend the bridge or revert on an already-drained balance. The
+    // inputs haven't changed since (see the reset effect below), so a step
+    // marked "done" in the previous attempt is still valid now.
     // Only resume off a prior FAILURE — if the last run finished
     // successfully, "borrow again" with the same inputs means do it again
     // from scratch, not silently no-op because every step already reads "done".
     const wasDone = (key) => runStatus === "error" && runLog.find((s) => s.key === key)?.status === "done";
-    const alreadyBridged = crossChain && wasDone("bridge");
+    const alreadyBridged = needsSwap && wasDone("bridge");
     const alreadySupplied = wasDone("supply");
     const alreadyBorrowed = wasDone("borrow");
 
+    const bridgeLabel =
+      collateralToken.symbol === "USDC"
+        ? `bridge USDC → ${CHAIN_LABEL[destNetwork] || destNetwork}`
+        : `swap ${collateralToken.symbol} → USDC on ${CHAIN_LABEL[destNetwork] || destNetwork}`;
     const steps = [
-      ...(crossChain ? [{ key: "bridge", label: `bridge USDC → ${CHAIN_LABEL[destNetwork]}`, status: alreadyBridged ? "done" : "pending" }] : []),
+      ...(needsSwap ? [{ key: "bridge", label: bridgeLabel, status: alreadyBridged ? "done" : "pending" }] : []),
       { key: "approve", label: "approve USDC", status: alreadySupplied ? "done" : "pending" },
       { key: "supply", label: "supply USDC to Aave", status: alreadySupplied ? "done" : "pending" },
       { key: "borrow", label: `borrow ${borrowAsset.symbol}`, status: alreadyBorrowed ? "done" : "pending" },
@@ -409,7 +446,7 @@ export default function BorrowPanel({
 
       if (alreadySupplied) {
         await ensureChain(destChainId);
-      } else if (crossChain && alreadyBridged) {
+      } else if (needsSwap && alreadyBridged) {
         await ensureChain(destChainId);
         supplyAmountBaseUnits = await readContract(wagmiConfig, {
           chainId: destChainId,
@@ -418,9 +455,9 @@ export default function BorrowPanel({
           functionName: "balanceOf",
           args: [address],
         });
-      } else if (crossChain) {
+      } else if (needsSwap) {
         setStep("bridge", "active", { detail: "getting a live quote..." });
-        const originToken = findTokenRecord(liveTokens, "USDC", originNetwork);
+        const originToken = collateralTokenRecord;
         const destToken = findTokenRecord(liveTokens, "USDC", destNetwork);
         if (!originToken?.assetId || !destToken?.assetId) {
           throw new Error("token data is still loading — try again in a moment");
@@ -450,13 +487,16 @@ export default function BorrowPanel({
 
         setStep("bridge", "active", { detail: "confirm the deposit in your wallet..." });
         await ensureChain(originChainId);
-        const txHash = await writeContract(wagmiConfig, {
-          chainId: originChainId,
-          address: originToken.contractAddress,
-          abi: ERC20_ABI,
-          functionName: "transfer",
-          args: [depositAddress, BigInt(amountBaseUnits)],
-        });
+        const originIsNative = NATIVE_SYMBOL_BY_CHAIN[originChainId] === originToken.symbol;
+        const txHash = originIsNative
+          ? await sendTransaction(wagmiConfig, { chainId: originChainId, to: depositAddress, value: BigInt(amountBaseUnits) })
+          : await writeContract(wagmiConfig, {
+              chainId: originChainId,
+              address: originToken.contractAddress,
+              abi: ERC20_ABI,
+              functionName: "transfer",
+              args: [depositAddress, BigInt(amountBaseUnits)],
+            });
         setStep("bridge", "active", { detail: "deposit sent — waiting for the bridge...", txHash, chainId: originChainId });
         await waitForTransactionReceipt(wagmiConfig, { chainId: originChainId, hash: txHash });
 
@@ -622,7 +662,15 @@ export default function BorrowPanel({
     <div style={{ maxWidth: 380, margin: "0 auto", paddingBottom: 40 }}>
       <div className="hood-card-scale" style={{ border: `1px solid ${ink}`, background: paper, transformOrigin: "top center" }}>
         <div style={{ padding: 16 }}>
-          <div style={{ fontSize: 11, color: gray, marginBottom: 4, fontWeight: 600 }}>collateral (USDC)</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+            <div style={{ fontSize: 11, color: gray, fontWeight: 600 }}>collateral ({collateralToken.symbol})</div>
+            <span
+              onClick={() => setTokenPickerOpen((v) => !v)}
+              style={{ fontSize: 11, color: gray, cursor: "pointer", textDecoration: "underline" }}
+            >
+              {tokenPickerOpen ? "[ close ]" : "[ deposit a different token ]"}
+            </span>
+          </div>
           <div style={{ borderBottom: `1px solid ${line}`, paddingBottom: 8, marginBottom: 6 }}>
             <input
               value={collateralAmount}
@@ -647,31 +695,72 @@ export default function BorrowPanel({
               </div>
             )}
           </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: tokenPickerOpen ? 10 : 18 }}>
             {AAVE_CHAINS.map(({ network, label }) => {
               const bal = ownedBalances[`USDC|${network}`];
+              const isActive = collateralToken.symbol === "USDC" && collateralToken.network === network;
               return (
                 <span
                   key={network}
                   onClick={() => {
-                    setCollateralNetwork(network);
+                    setCollateralToken({ symbol: "USDC", network });
                     setCollateralTouched(true);
+                    setTokenPickerOpen(false);
                   }}
                   style={{
                     fontSize: 11,
                     padding: "5px 9px",
                     border: `1px solid ${ink}`,
                     cursor: "pointer",
-                    background: collateralNetwork === network ? ink : "transparent",
-                    color: collateralNetwork === network ? paper : ink,
+                    background: isActive ? ink : "transparent",
+                    color: isActive ? paper : ink,
                   }}
                 >
                   {label}
-                  {bal !== undefined && bal > 0n ? ` (${truncateDecimalString(formatUnits(bal, collateralDecimals), 2)})` : ""}
+                  {bal !== undefined && bal > 0n ? ` (${truncateDecimalString(formatUnits(bal, 6), 2)})` : ""}
                 </span>
               );
             })}
           </div>
+
+          {tokenPickerOpen && (
+            <div style={{ border: `1px solid ${line}`, marginBottom: 18 }}>
+              <div style={{ padding: 8, borderBottom: `1px solid ${line}` }}>
+                <input
+                  value={tokenSearch}
+                  onChange={(e) => setTokenSearch(e.target.value)}
+                  placeholder="search a token you hold..."
+                  className="hood-field"
+                  style={{ width: "100%", border: "none", outline: "none", fontSize: 12, fontFamily: "inherit", background: "transparent", color: ink }}
+                  autoFocus
+                />
+              </div>
+              {ownedBalancesStatus !== "ready" && (
+                <div style={{ padding: 10, fontSize: 11, color: gray }}>connect a wallet to see what you hold.</div>
+              )}
+              {ownedBalancesStatus === "ready" && ownedTokenOptions.length === 0 && (
+                <div style={{ padding: 10, fontSize: 11, color: gray }}>nothing found{tokenSearch ? " for that search" : " — deposit into your wallet first"}.</div>
+              )}
+              {ownedTokenOptions.map((t) => (
+                <div
+                  key={`${t.symbol}|${t.network}`}
+                  onClick={() => {
+                    setCollateralToken({ symbol: t.symbol, network: t.network });
+                    setCollateralTouched(true);
+                    setTokenPickerOpen(false);
+                    setTokenSearch("");
+                    setCollateralAmount("");
+                  }}
+                  style={{ display: "flex", justifyContent: "space-between", padding: "8px 10px", fontSize: 12, cursor: "pointer", borderBottom: `1px solid ${line}` }}
+                >
+                  <span>
+                    {t.symbol} <span style={{ color: gray }}>on {CHAIN_LABEL[t.network] || t.network}</span>
+                  </span>
+                  <span style={{ color: gray }}>{t.amountNum.toFixed(4)}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div style={{ fontSize: 11, color: gray, marginBottom: 4, fontWeight: 600 }}>borrow ({borrowSymbol})</div>
           <div style={{ borderBottom: `1px solid ${line}`, paddingBottom: 8, marginBottom: 6 }}>
@@ -747,8 +836,10 @@ export default function BorrowPanel({
 
           {activeRate?.eligible && (
             <div style={{ fontSize: 11, color: gray, marginBottom: 14 }}>
-              {crossChain
-                ? `bridges USDC from ${CHAIN_LABEL[collateralNetwork]} to ${activeRate.label} via NEAR intents, then supplies + borrows on Aave.`
+              {needsSwap
+                ? collateralToken.symbol === "USDC"
+                  ? `bridges USDC from ${CHAIN_LABEL[collateralToken.network] || collateralToken.network} to ${activeRate.label} via NEAR intents, then supplies + borrows on Aave.`
+                  : `converts ${collateralToken.symbol} on ${CHAIN_LABEL[collateralToken.network] || collateralToken.network} into USDC on ${activeRate.label} via NEAR intents, then supplies + borrows on Aave.`
                 : `already on ${activeRate.label} — supplies + borrows directly.`}
               {deliversElsewhere && ` then sends the borrowed ${borrowSymbol} on to ${CHAIN_LABEL[receiveNetworkEffective]} — still one click.`}
               {insufficientLiquidity && (
