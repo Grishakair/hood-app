@@ -39,6 +39,25 @@ const POPULAR_TOKENS = [
   { symbol: "POL", network: "pol", chainLabel: "Polygon" },
 ];
 
+const FEATURE_CARDS = [
+  {
+    title: "native yield",
+    body: "your collateral stays supplied to Aave the whole time — it keeps earning supply APY even while the card is spending against it.",
+  },
+  {
+    title: "no taxable event",
+    body: "borrowing against your position isn't a sale — in most jurisdictions that means no capital-gains trigger, unlike cashing out. not tax advice, check your local rules.",
+  },
+  {
+    title: "cashback in MON",
+    body: "spend rewards land back in MON, sourced from Aave's own incentive program on Monad — not a separate points system.",
+  },
+  {
+    title: "mastercard network",
+    body: "issued through Immersve, a Mastercard principal member — works anywhere Mastercard is accepted, 70M+ merchants, Apple Pay ready.",
+  },
+];
+
 function pollUntilSettled(depositAddress, onDetail) {
   return new Promise((resolve, reject) => {
     const check = () => {
@@ -606,6 +625,15 @@ export default function MonadFlow() {
               </a>
             </div>
           )}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 24 }}>
+          {FEATURE_CARDS.map((f) => (
+            <div key={f.title} style={{ border: `1px solid ${line}`, padding: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>[ {f.title} ]</div>
+              <div style={{ fontSize: 11, color: gray, lineHeight: 1.6 }}>{f.body}</div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
