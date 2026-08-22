@@ -659,7 +659,7 @@ export default function MonadFlow() {
       let token = cardSession?.accessToken;
       if (!token) {
         setCardFlowPhase("sign in to activate your card...");
-        const init = await siweLoginInit({ address, network: "monad" });
+        const init = await siweLoginInit({ address });
         const signature = await signMessage(wagmiConfig, { message: init.signingChallenge.message, account: address });
         setCardFlowPhase("verifying...");
         const { accessToken } = await siweLoginComplete({ loginRequestId: init.id, signature });

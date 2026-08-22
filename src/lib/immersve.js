@@ -68,7 +68,13 @@ async function request(path, { method = "GET", token, body, extraHeaders } = {})
 const IMMERSVE_SANDBOX_URL = import.meta.env.VITE_IMMERSVE_APP_URL || "http://localhost:3000";
 
 // Step 1 of SIWE login — asks Immersve for the exact EIP-4361 message to sign.
-export function siweLoginInit({ address, network = "monad" }) {
+// Immersve's public sandbox has no "monad" network — passing it 500s
+// server-side instead of a clean validation error (confirmed via direct
+// curl: "monad" -> 500 INTERNAL_SERVER_ERROR, "polygon-amoy" -> 200).
+// Its own SIWE message hardcodes Chain ID 80002 (Polygon Amoy) no matter
+// what's sent here, so the sandbox is pinned to Amoy regardless — this is
+// purely a login/identity step, unrelated to the real Monad Aave position.
+export function siweLoginInit({ address, network = "polygon-amoy" }) {
   return request("/auth/login-init", {
     method: "POST",
     body: {
