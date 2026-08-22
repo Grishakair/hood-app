@@ -56,6 +56,17 @@ async function request(path, { method = "GET", token, body, extraHeaders } = {})
   return data;
 }
 
+// Immersve's published public sandbox clientApplicationId is locked to
+// localhost as its allowed domain — any other `url` gets a 403
+// CLIENT_APPLICATION_DOMAIN_NOT_ALLOWED, confirmed live (the real deployed
+// origin fails, "http://localhost:3000" succeeds with the exact same
+// credentials). `url` only feeds the SIWE message's URI line and this
+// allowlist check, not anything security-relevant to the signature itself,
+// so hardcoding it is safe — it just needs to be a domain the sandbox app
+// actually permits. Swap this for the real origin once using a
+// non-public/own clientApplicationId that's allowlisted for it.
+const IMMERSVE_SANDBOX_URL = import.meta.env.VITE_IMMERSVE_APP_URL || "http://localhost:3000";
+
 // Step 1 of SIWE login — asks Immersve for the exact EIP-4361 message to sign.
 export function siweLoginInit({ address, network = "monad" }) {
   return request("/auth/login-init", {
@@ -66,7 +77,7 @@ export function siweLoginInit({ address, network = "monad" }) {
       clientApplicationId: IMMERSVE_CLIENT_APPLICATION_ID,
       scopes: ["cardholder-partner"],
       address,
-      url: window.location.origin,
+      url: IMMERSVE_SANDBOX_URL,
       autoSignup: true,
     },
   });
