@@ -205,11 +205,12 @@ export default function MonadFlow() {
       functionName: "getUserAccountData",
       args: [address],
     })
-      .then(([totalCollateralBase, totalDebtBase]) => {
+      .then(([totalCollateralBase, totalDebtBase, availableBorrowsBase]) => {
         if (cancelled) return;
         setExistingPosition({
           totalCollateralUsd: Number(totalCollateralBase) / 1e8,
           totalDebtUsd: Number(totalDebtBase) / 1e8,
+          availableBorrowsUsd: Number(availableBorrowsBase) / 1e8,
         });
       })
       .catch(() => !cancelled && setExistingPosition(null));
@@ -408,8 +409,21 @@ export default function MonadFlow() {
       await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: supplyTx });
       const suppliedFormatted = truncateDecimalString(formatUnits(supplyAmountBaseUnits, market.collateralAsset.decimals), 6);
 
-      const usdValue = Number(suppliedFormatted) * market.collateralAsset.usdPrice;
-      const safeBorrow = (usdValue * market.collateralAsset.maxLtv * 0.85) / market.borrowAsset.usdPrice;
+      // Read the account fresh rather than computing from just this
+      // deposit's own numbers — availableBorrowsBase already accounts for
+      // *all* collateral this wallet has on the pool (including anything
+      // supplied in an earlier attempt), so topping up an existing
+      // position borrows against the true total, not just what just got
+      // supplied. 95% of that (not Aave's raw max) keeps a sliver of
+      // headroom below the liquidation threshold.
+      const [, , availableBorrowsBase] = await readContract(wagmiConfig, {
+        chainId: monad.id,
+        address: market.poolAddress,
+        abi: AAVE_POOL_ABI,
+        functionName: "getUserAccountData",
+        args: [address],
+      });
+      const safeBorrow = (Number(availableBorrowsBase) / 1e8 / market.borrowAsset.usdPrice) * 0.95;
       const borrowAmountBaseUnits = BigInt(toBaseUnits(safeBorrow.toFixed(6), market.borrowAsset.decimals));
 
       const borrowTx = await writeContract(wagmiConfig, {
@@ -442,6 +456,15 @@ export default function MonadFlow() {
   // one where borrow then failed) or survive a page reload.
   const hasSupplied = Boolean(position) || (existingPosition?.totalCollateralUsd ?? 0) > 0.000001;
   const hasDebt = Boolean(position?.borrowedFormatted && Number(position.borrowedFormatted) > 0) || (existingPosition?.totalDebtUsd ?? 0) > 0.000001;
+  // The one number the user actually sees — "deposit" means spendable
+  // balance, i.e. what got borrowed, not the collateral locked behind it.
+  // If collateral is in but the borrow leg hasn't landed yet, show what's
+  // available to activate instead of a confusing $0.
+  const depositDisplay = position
+    ? Number(position.borrowedFormatted)
+    : hasDebt
+    ? existingPosition.totalDebtUsd
+    : (existingPosition?.availableBorrowsUsd ?? 0) * 0.95;
 
   // Full unwind, back to the wallet — repay the whole debt, then withdraw
   // the whole collateral. Aave's own "repay everything / withdraw
@@ -507,7 +530,6 @@ export default function MonadFlow() {
 
   const depositing = depositStatus === "running";
   const withdrawing = withdrawStatus === "running";
-  const spread = market ? market.supplyApy - market.borrowApy : null;
 
   return (
     <div style={{ background: paper, minHeight: "100vh", fontFamily: "'IBM Plex Mono', monospace", color: ink, padding: "24px 20px 60px" }}>
@@ -577,7 +599,7 @@ export default function MonadFlow() {
           {hasSupplied ? (
             <>
               <div style={{ marginTop: 24, fontSize: 26, letterSpacing: 1 }}>
-                ${position ? position.borrowedFormatted : existingPosition.totalDebtUsd.toFixed(2)}
+                ${depositDisplay.toFixed(2)}
               </div>
               <div style={{ fontSize: 11, opacity: 0.7, marginTop: 2 }}>available to spend</div>
               <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
@@ -610,7 +632,7 @@ export default function MonadFlow() {
             </button>
           )}
 
-          {isConnected && !hasSupplied && (
+          {isConnected && (
             <>
               <div style={{ fontSize: 11, color: gray, fontWeight: 600, marginBottom: 6 }}>deposit — choose a token</div>
               <div
@@ -770,30 +792,12 @@ export default function MonadFlow() {
           {isConnected && hasSupplied && (
             <>
               <div style={{ fontSize: 12, lineHeight: 1.8, marginBottom: 14 }}>
-                {position ? (
-                  <div>
-                    supplied <strong>{position.suppliedFormatted} USDC</strong> · borrowed{" "}
-                    <strong>
-                      {position.borrowedFormatted} {market?.borrowAsset.symbol}
-                    </strong>
-                  </div>
-                ) : (
-                  <div>
-                    supplied <strong>~${existingPosition.totalCollateralUsd.toFixed(2)}</strong>
-                    {hasDebt && (
-                      <>
-                        {" "}
-                        · borrowed <strong>~${existingPosition.totalDebtUsd.toFixed(2)}</strong>
-                      </>
-                    )}
-                    <div style={{ color: gray, fontSize: 11, marginTop: 2 }}>
-                      found on-chain from an earlier attempt — this is Aave's own account data for your wallet.
-                    </div>
-                  </div>
-                )}
-                {position && spread !== null && (
-                  <div style={{ color: gray }}>
-                    earning {market.supplyApy.toFixed(2)}% · paying {market.borrowApy.toFixed(2)}% · {spread.toFixed(2)}% net
+                <div>
+                  deposit <strong>~${depositDisplay.toFixed(2)}</strong>
+                </div>
+                {!hasDebt && (
+                  <div style={{ color: gray, fontSize: 11 }}>
+                    one step left — deposit again above (any small amount) to activate it.
                   </div>
                 )}
               </div>
