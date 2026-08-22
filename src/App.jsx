@@ -10,9 +10,10 @@ import {
 import { formatUnits } from "viem";
 import QRCode from "qrcode";
 import { useAppKit } from "@reown/appkit/react";
-import { mainnet, base, optimism, polygon, bsc } from "@reown/appkit/networks";
+import { mainnet, base, optimism, polygon, bsc, monad } from "@reown/appkit/networks";
 import { wagmiConfig } from "./config/appkit.js";
 import BorrowPanel from "./Borrow.jsx";
+import CardPanel from "./Card.jsx";
 import {
   EXPLORER_BY_CHAIN,
   CHAIN_ID_BY_NETWORK,
@@ -29,6 +30,7 @@ import {
   buildQuoteBody,
   fetchQuoteWithRetry,
   quoteErrorMessage,
+  friendlyTxError,
   ERC20_ABI,
 } from "./lib/shared.js";
 
@@ -46,7 +48,7 @@ const TOKEN_LIST = [
   { symbol: "BTC", network: "Bitcoin" },
 ];
 
-const NETWORK_CHIPS = ["all", "ethereum", "base", "optimism", "polygon", "near", "bitcoin"];
+const NETWORK_CHIPS = ["all", "ethereum", "base", "optimism", "polygon", "monad", "near", "bitcoin"];
 
 // Shown first in the network filter chips — our highest-priority chains.
 // Tron was tried here too, but real (non-dry) quotes for it fail 100% of
@@ -55,7 +57,10 @@ const NETWORK_CHIPS = ["all", "ethereum", "base", "optimism", "polygon", "near",
 // actual deposit-address generation is broken) — not something we can fix
 // on our end, so it stays demoted under "more" until that's resolved,
 // rather than featuring a route that can't currently complete.
-const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "pol"];
+// Monad is featured too — Aurora Intents lists it as a live destination
+// (MON/USDC/USDT0 all have real assetIds) and Aave v3 runs there for real,
+// which is what the Card/Earn flow supplies and borrows against.
+const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "pol", "monad"];
 
 // Sort order for the buy/receive token list — the 1click API returns NEAR
 // tokens first just because of how it's indexed, not because they're most
@@ -70,8 +75,8 @@ const PRIORITY_TOKEN_ORDER = [
   { symbol: "ETH", network: "eth" },
   { symbol: "ZEC", network: "zec" },
 ];
-const POPULAR_TOKEN_SYMBOLS = ["USDC", "USDT", "ETH", "WETH", "POL", "BTC", "SOL", "BNB"];
-const POPULAR_TOKEN_NETWORKS = ["eth", "base", "bsc", "pol"];
+const POPULAR_TOKEN_SYMBOLS = ["USDC", "USDT", "USDT0", "ETH", "WETH", "POL", "BTC", "SOL", "BNB", "MON"];
+const POPULAR_TOKEN_NETWORKS = ["eth", "base", "bsc", "pol", "monad"];
 
 function tokenSortRank(t) {
   const net = t.network?.toLowerCase();
@@ -89,6 +94,7 @@ const GAS_RESERVE_NATIVE = {
   [optimism.id]: 0.0005,
   [polygon.id]: 0.05,
   [bsc.id]: 0.001,
+  [monad.id]: 0.01,
 };
 
 const isEvmAddress = (value) => /^0x[a-fA-F0-9]{40}$/.test(value || "");
@@ -122,6 +128,18 @@ function addressLooksWrongForChain(value, network) {
   if (CHAIN_ID_BY_NETWORK[net]) return !isEvmAddress(value);
   return isEvmAddress(value);
 }
+
+// Live-preview quote calls (swap and send) need *some* recipient/refund
+// address before Aurora will price a route, even though no funds are ever
+// actually addressed there while the wallet's disconnected. The all-zero
+// address looks like the obvious placeholder but Aurora's API rejects it
+// outright ("recipient is not valid") — verified live, it's not a checksum
+// issue, the API specifically flags it — so every preview quote while
+// disconnected silently failed as "no route found for this pair" instead
+// of showing a rate. An address made of a repeated digit has no letters,
+// so there's no EIP-55 checksum casing to get wrong either, and it quotes
+// fine.
+const PREVIEW_PLACEHOLDER_EVM_ADDRESS = "0x1111111111111111111111111111111111111111";
 
 // Buy/receive pickers always show price — never a wallet balance. Only the
 // sell picker cares what you hold (see the batched fetch in App below).
@@ -559,6 +577,13 @@ export default function App() {
   const [sendDepositAddress, setSendDepositAddress] = useState("");
   const [sendDepositDeadline, setSendDepositDeadline] = useState(null);
   const [sendDepositTimeEstimate, setSendDepositTimeEstimate] = useState(null);
+  // Live preview of what the recipient actually ends up with — a send that
+  // converts token/is private/originates non-EVM routes through the same
+  // Aurora Intents quote as a swap and comes out fee-adjusted, but unlike
+  // swap mode there was no "receive" field showing that before you hit send.
+  const [sendReceiveAmount, setSendReceiveAmount] = useState("");
+  const [sendFeeBps, setSendFeeBps] = useState(null);
+  const [sendQuoteStatus, setSendQuoteStatus] = useState("idle"); // idle | loading | ok | error
   const [swapRecipient, setSwapRecipient] = useState("");
   const [swapPriv, setSwapPriv] = useState(false);
   const [slippage, setSlippage] = useState("0.5");
@@ -658,7 +683,7 @@ export default function App() {
     // typed value for native non-EVM coins that have no contract address.
     const placeholderFor = (token, typed) => {
       const chainId = CHAIN_ID_BY_NETWORK[token?.network?.toLowerCase()];
-      if (chainId) return (isConnected && address) || "0x0000000000000000000000000000000000000000";
+      if (chainId) return (isConnected && address) || PREVIEW_PLACEHOLDER_EVM_ADDRESS;
       if (token?.contractAddress) return token.contractAddress;
       // Native coin with no contract address to fall back on — only use
       // what's typed if it's actually formatted right for this chain,
@@ -737,6 +762,110 @@ export default function App() {
     swapPriv,
     swapRefundAddress,
     swapRecipient,
+  ]);
+
+  // Live "what does the recipient actually get" preview for send mode —
+  // mirrors the swap quote effect above. A plain same-chain, same-token,
+  // non-private send is a direct wallet transfer with no fee at all, so
+  // there's nothing to quote; everything else (convert, private, or a
+  // non-EVM origin that has to route through a deposit anyway) goes through
+  // the same Aurora Intents pricing a swap does, and loses a cut to it.
+  useEffect(() => {
+    if (mode !== "send") return;
+
+    const chainId = CHAIN_ID_BY_NETWORK[sendNetwork?.toLowerCase()];
+    const needsIntents = priv || convertToken || !chainId;
+    if (!needsIntents) {
+      setSendReceiveAmount("");
+      setSendFeeBps(null);
+      setSendQuoteStatus("idle");
+      return;
+    }
+
+    const originToken = findTokenRecord(liveTokens, sendTok, sendNetwork);
+    const destToken = convertToken ? findTokenRecord(liveTokens, receiveToken, receiveNetwork) : originToken;
+    const amountNum = Number(sendAmt);
+
+    // Same reasoning as the swap preview: the recipient/refund addresses
+    // only need to be validly-formatted for their chain here, not real.
+    const placeholderFor = (token, typed) => {
+      const tokenChainId = CHAIN_ID_BY_NETWORK[token?.network?.toLowerCase()];
+      if (tokenChainId) return (isConnected && address) || PREVIEW_PLACEHOLDER_EVM_ADDRESS;
+      if (token?.contractAddress) return token.contractAddress;
+      return typed && !addressLooksWrongForChain(typed, token?.network) ? typed : null;
+    };
+    const refundPlaceholder = placeholderFor(originToken, sendRefundAddress);
+    const recipientPlaceholder = placeholderFor(destToken, recipient);
+
+    if (
+      !originToken?.assetId ||
+      !destToken?.assetId ||
+      !amountNum ||
+      amountNum <= 0 ||
+      !refundPlaceholder ||
+      !recipientPlaceholder
+    ) {
+      setSendReceiveAmount("");
+      setSendFeeBps(null);
+      setSendQuoteStatus("idle");
+      return;
+    }
+
+    let cancelled = false;
+    setSendQuoteStatus("loading");
+    const slippageBps = Math.round(Number(customSlippage || slippage) * 100);
+
+    const timeout = setTimeout(() => {
+      fetchQuoteWithRetry(
+        AURORA_QUOTE_URL,
+        buildQuoteBody({
+          dry: true,
+          originToken,
+          destToken,
+          amountBaseUnits: toBaseUnits(sendAmt, originToken.decimals),
+          slippageBps,
+          recipient: recipientPlaceholder,
+          refundTo: refundPlaceholder,
+          confidential: priv,
+        }),
+        { isCancelled: () => cancelled }
+      )
+        .then((data) => {
+          if (cancelled) return;
+          setSendReceiveAmount(data.quote.amountOutFormatted);
+          const totalFeeBps = (data.quoteRequest?.appFees || []).reduce((sum, f) => sum + (f.fee || 0), 0);
+          setSendFeeBps(totalFeeBps);
+          setSendQuoteStatus("ok");
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setSendReceiveAmount("");
+            setSendFeeBps(null);
+            setSendQuoteStatus("error");
+          }
+        });
+    }, 400);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, [
+    mode,
+    sendAmt,
+    sendTok,
+    sendNetwork,
+    recipient,
+    priv,
+    convertToken,
+    receiveToken,
+    receiveNetwork,
+    liveTokens,
+    slippage,
+    customSlippage,
+    isConnected,
+    address,
+    sendRefundAddress,
   ]);
 
   // A previous attempt's result no longer applies once the trade itself changes.
@@ -970,7 +1099,7 @@ export default function App() {
       pollSendStatus(depositAddress);
     } catch (err) {
       setSendStatus("error");
-      setSendError(err?.shortMessage || err?.message || "send failed");
+      setSendError(friendlyTxError(err, "send failed"));
     }
   }
 
@@ -1148,7 +1277,7 @@ export default function App() {
       pollSwapStatus(depositAddress);
     } catch (err) {
       setSwapStatus("error");
-      setSwapError(err?.shortMessage || err?.message || "swap failed");
+      setSwapError(friendlyTxError(err, "swap failed"));
     }
   }
 
@@ -1293,6 +1422,7 @@ export default function App() {
           {[
             { key: "app", label: "Swap" },
             { key: "borrow", label: "Borrow" },
+            { key: "card", label: "Card" },
             { key: "how", label: "How it work?" },
             { key: "club", label: "Hood club" },
           ].map(({ key, label }) => (
@@ -1383,6 +1513,10 @@ export default function App() {
           address={address}
           open={open}
         />
+      )}
+
+      {topTab === "card" && (
+        <CardPanel ink={ink} gray={gray} line={line} paper={paper} isConnected={isConnected} address={address} open={open} />
       )}
 
       {topTab === "app" && (
@@ -1671,6 +1805,28 @@ export default function App() {
                 ink={ink}
                 bold
               />
+              {sendQuoteStatus === "loading" && (
+                <div style={{ fontSize: 11, color: gray, marginTop: 2 }}>checking the fee...</div>
+              )}
+              {sendQuoteStatus === "error" && (
+                <div style={{ fontSize: 11, color: gray, marginTop: 2 }}>no route found for this pair</div>
+              )}
+              {sendQuoteStatus === "ok" && sendReceiveAmount && (
+                <div style={{ fontSize: 11, color: gray, marginTop: 2 }}>
+                  recipient receives ~{sendReceiveAmount} {convertToken ? receiveToken || "" : sendTok}
+                  {sendFeeBps !== null && ` — fee: ${(sendFeeBps / 100).toFixed(2)}%`}
+                </div>
+              )}
+              {sendQuoteStatus === "idle" &&
+                !priv &&
+                !convertToken &&
+                Boolean(CHAIN_ID_BY_NETWORK[sendNetwork?.toLowerCase()]) &&
+                sendAmt &&
+                Number(sendAmt) > 0 && (
+                  <div style={{ fontSize: 11, color: gray, marginTop: 2 }}>
+                    recipient receives exactly {sendAmt} {sendTok} — direct on-chain transfer, no fee
+                  </div>
+                )}
 
               <div style={{ marginTop: 14 }}>
                 <div
@@ -1963,7 +2119,7 @@ export default function App() {
 
       {topTab !== "club" && (
         <div style={{ textAlign: "center", marginTop: 22, fontSize: 11, color: gray }}>
-          powered by near intents
+          powered by Aurora Intents
         </div>
       )}
 

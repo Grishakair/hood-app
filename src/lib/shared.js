@@ -5,7 +5,7 @@
 // Borrow's top-level consts reading App's exports before they're
 // initialized).
 import { getAccount, switchChain } from "wagmi/actions";
-import { mainnet, base, optimism, polygon, bsc } from "@reown/appkit/networks";
+import { mainnet, base, optimism, polygon, bsc, monad } from "@reown/appkit/networks";
 import { wagmiConfig } from "../config/appkit.js";
 
 export const EXPLORER_BY_CHAIN = {
@@ -14,6 +14,7 @@ export const EXPLORER_BY_CHAIN = {
   [optimism.id]: "https://optimistic.etherscan.io",
   [polygon.id]: "https://polygonscan.com",
   [bsc.id]: "https://bscscan.com",
+  [monad.id]: "https://monadscan.com",
 };
 
 // EVM chains we can actually read live balances for via wagmi. Keyed by both
@@ -29,6 +30,7 @@ export const CHAIN_ID_BY_NETWORK = {
   pol: polygon.id,
   bsc: bsc.id,
   bnb: bsc.id,
+  monad: monad.id,
 };
 
 export const NATIVE_SYMBOL_BY_CHAIN = {
@@ -37,6 +39,7 @@ export const NATIVE_SYMBOL_BY_CHAIN = {
   [optimism.id]: "ETH",
   [polygon.id]: "POL",
   [bsc.id]: "BNB",
+  [monad.id]: "MON",
 };
 
 export const CHAIN_NAME_BY_ID = {
@@ -45,6 +48,7 @@ export const CHAIN_NAME_BY_ID = {
   [optimism.id]: "Optimism",
   [polygon.id]: "Polygon",
   [bsc.id]: "BNB Chain",
+  [monad.id]: "Monad",
 };
 
 // Some mobile wallet connectors don't auto-switch the active chain when a
@@ -161,6 +165,27 @@ export async function quoteErrorMessage(res) {
     // response wasn't JSON — fall through to the generic message
   }
   return "could not get a live quote";
+}
+
+// A handful of wallets/RPC endpoints surface their own flakiness as cryptic
+// strings ("Version of JSON-RPC protocol is not supported", RPC calls
+// returning "Unauthorized") that read like an app bug but are actually the
+// connected wallet's configured node for that chain being broken — nothing
+// a dApp can control, since wallets broadcast/read through their own RPC,
+// not this app's. Recognized here so the fix (switch the RPC in the
+// wallet's network settings) shows up instead of the raw wallet text.
+const RPC_FLAKE_PATTERNS = [
+  /json-rpc protocol/i,
+  /unauthorized/i,
+  /internal json-rpc error/i,
+  /failed to fetch/i,
+  /missing or invalid parameters/i,
+];
+
+export function friendlyTxError(err, fallback = "something went wrong") {
+  const raw = err?.shortMessage || err?.message || fallback;
+  if (!RPC_FLAKE_PATTERNS.some((p) => p.test(raw))) return raw;
+  return `${raw} — this usually means your wallet's RPC endpoint for this chain is broken or unauthorized, not this app. Try switching the RPC URL for this network in your wallet's settings, then try again.`;
 }
 
 export const ERC20_ABI = [

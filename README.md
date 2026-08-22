@@ -1,7 +1,12 @@
 # hood
 
-Minimal swap/send interface on top of NEAR Intents. Toggle between swap and
-send, with an optional private mode, in one flow.
+A minimal, monochrome front end over [NEAR Intents](https://docs.intents.aurora.dev/) (via Aurora
+Intents Connect) for cross-chain swap, send, Aave borrowing, and a card funded straight out of an
+on-chain yield position — built for the Monad hackathon.
+
+No wallet backend, no custom contracts: everything talks directly to public/partner APIs
+(Aurora Intents, Aave's own GraphQL API, Immersve's sandbox) from the client, with wagmi/Reown
+AppKit for wallet connect + signing.
 
 ## Run locally
 
@@ -12,58 +17,62 @@ npm run dev
 
 Opens at `http://localhost:5173`.
 
-## What's already wired up
+## What's live
 
-- Full swap / send UI, matching the design we iterated on in chat
-- Live token list: on load, the app calls the public 1Click endpoint
-  `GET https://1click.chaindefuser.com/v0/tokens` (no API key needed) and
-  shows real tokens + prices in the token picker. If the request fails for
-  any reason, it falls back to a small demo list so the UI never breaks.
-- All the interaction state (swap/send mode, private toggles, convert-for-
-  recipient, slippage, token picker) is real React state — no mock buttons.
+- **Swap / Send** — cross-chain swap or send across 30+ chains via Aurora Intents, with an optional
+  private mode (Confidential Intents) and a manual-deposit fallback for non-EVM origins.
+- **Borrow** — aggregates live Aave v3 rates (`api.v3.aave.com/graphql`, no key needed) across
+  Ethereum, Base, BNB Chain, Polygon, and **Monad**, bridges USDC collateral in if needed, then
+  supplies + borrows in one click.
+  - On the first four chains this borrows ETH (the classic "borrow against your bag" case).
+  - On **Monad**, Aave v3.7 is a real, live deployment (not a fork) — so instead of ETH, it
+    supplies USDC and borrows whichever *enabled stablecoin currently has the lowest APY*. Since
+    Monad's supply APY has consistently run above every stablecoin's borrow APY (an early-protocol
+    incentive effect), this is a one-shot, no-loop carry position: the spread between the two is
+    passive yield that never needs re-supplying.
+- **Card** — Immersve sandbox integration: SIWE login (ties the card to your wallet, not a shared
+  identity), spending-prerequisites check, virtual card issuance, on-demand PAN/CVV reveal, and a
+  "simulate payment" button that fires a real test authorization + clearing against Immersve's
+  sandbox card network. Sandbox only — no real money moves.
 
-This part didn't work inside the claude.ai artifact preview because that
-sandbox blocks outbound fetches to arbitrary domains. Running it here, as a
-real page, that restriction goes away.
+The pitch: deposit from any chain, let it earn on Aave on Monad, and spend against that position
+through the card — the collateral keeps earning while the card spends the borrowed spread.
 
-## What's next (not wired up yet)
+## Env vars
 
-1. **Wallet connection.** Nothing here can move real funds without it.
-   - EVM chains: [wagmi](https://wagmi.sh/) + [viem](https://viem.sh/)
-   - NEAR: [NEAR Wallet Selector](https://github.com/near/wallet-selector)
-   - Aurora Labs also ships `@aurora-is-near/intents-swap-widget`, whose
-     `hooks`/`machine` submodules can replace a lot of this by-hand plumbing
-     if you'd rather not write the quote/deposit/status logic yourself.
+Copy `.env` and set (all optional — the app runs without them, just with reduced functionality):
 
-2. **Real quotes.** Right now amounts don't produce a live quote yet. The
-   next step is calling `POST https://1click.chaindefuser.com/v0/quote`
-   with `dry: true` whenever the sell amount or token changes, and showing
-   the estimated buy amount. This needs no wallet — just the two tokens and
-   an amount.
+```
+VITE_AURORA_API_KEY=...                       # aurora intents fee-free quotes (partners.near-intents.org)
+VITE_IMMERSVE_BASE_URL=...                    # defaults to Immersve's sandbox, https://test.immersve.com
+VITE_IMMERSVE_CLIENT_APPLICATION_ID=...       # defaults to Immersve's published public sandbox id
+VITE_IMMERSVE_FUNDING_CHANNEL_ID=...          # ditto
+VITE_IMMERSVE_CARD_PROGRAM_ID=...             # ditto
+VITE_IMMERSVE_ACCOUNT_ID=...                  # ditto
+```
 
-3. **Executing a swap/send.** Once a real quote comes back with a
-   `depositAddress`, the connected wallet needs to send funds there, then
-   the app polls `GET /v0/status?depositAddress=...` until it's `SUCCESS`.
-   This is the part where a private key ever touches a signature — get an
-   API key first (https://partners.near-intents.org) so you're not paying
-   the default 0.2% fee, and never put that key or a user's private key in
-   client-side code that ends up in the browser bundle for anything beyond
-   the JWT used for fee-free quotes.
+The Immersve defaults are Immersve's own publicly-documented sandbox test credentials (shared,
+revocable any time) — fine for a demo, but everyone using the same public docs shares that
+identity pool. Get your own sandbox account from Immersve if you want a clean one.
 
-4. **Private mode.** Confidential Intents currently supports transfers,
-   deposits, and withdrawals — not swaps yet ("swaps coming soon" per NEAR's
-   own docs as of this writing). So `send privately` can be made real now;
-   `make swap private` should stay labeled as upcoming until NEAR ships
-   confidential swaps, so the app doesn't promise something it can't do.
+## Known caveats
+
+- A few Immersve endpoint paths (funding source, card, prerequisites, simulator — see
+  `src/lib/immersve.js`) are inferred from Immersve's guide docs rather than a fetched OpenAPI
+  spec. The login and PAN-reveal paths are confirmed correct; if another one 404s, it's a one-line
+  fix, each call is isolated in its own function.
+- The card's funding source is scoped to whatever network Immersve's sandbox funding channel
+  actually runs on, not necessarily Monad directly — in production this would be backed by the
+  same Aave position the Borrow tab opens.
+- Leverage-loop (supply → borrow → re-supply) is intentionally not implemented — one-shot only, to
+  avoid presenting a liquidation-risk strategy as if it were riskless.
 
 ## Deploying
 
-Any static host works since this is a plain Vite app:
+Plain Vite app — any static host works:
 
 ```bash
 npm run build
 ```
 
-produces a `dist/` folder — drop it on Vercel, Netlify, or wherever you like.
-
-npm install
+produces a `dist/` folder.

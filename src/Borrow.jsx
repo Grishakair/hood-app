@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { writeContract, waitForTransactionReceipt, readContract } from "wagmi/actions";
 import { formatUnits } from "viem";
-import { mainnet, base, bsc, polygon } from "@reown/appkit/networks";
+import { mainnet, base, bsc, polygon, monad } from "@reown/appkit/networks";
 import { wagmiConfig } from "./config/appkit.js";
 import {
   EXPLORER_BY_CHAIN,
@@ -15,6 +15,7 @@ import {
   AURORA_DEPOSIT_SUBMIT_URL,
   buildQuoteBody,
   quoteErrorMessage,
+  friendlyTxError,
   STATUS_DETAIL_LABEL,
   ERC20_ABI,
 } from "./lib/shared.js";
@@ -24,17 +25,29 @@ const AAVE_GRAPHQL_URL = "https://api.v3.aave.com/graphql";
 // The four chains Hood's swap/send flows already treat as first-class (see
 // SUPPORTED_NETWORK_CODES in App.jsx) — all four also have a live Aave v3
 // deployment, so the same set works here without adding new chain support.
+// Monad is the odd one out (borrowMode "stable" below) — Aave v3.7 went
+// live there in July 2026 as a real deployment, not a fork, so it reads
+// through the exact same GraphQL + Pool ABI as everywhere else.
 const AAVE_CHAINS = [
-  { network: "eth", label: "Ethereum", chain: mainnet },
-  { network: "base", label: "Base", chain: base },
-  { network: "bsc", label: "BNB Chain", chain: bsc },
-  { network: "pol", label: "Polygon", chain: polygon },
+  { network: "eth", label: "Ethereum", chain: mainnet, borrowMode: "eth" },
+  { network: "base", label: "Base", chain: base, borrowMode: "eth" },
+  { network: "bsc", label: "BNB Chain", chain: bsc, borrowMode: "eth" },
+  { network: "pol", label: "Polygon", chain: polygon, borrowMode: "eth" },
+  { network: "monad", label: "Monad", chain: monad, borrowMode: "stable" },
 ];
 const CHAIN_LABEL = Object.fromEntries(AAVE_CHAINS.map((c) => [c.network, c.label]));
+const BORROW_MODE_BY_NETWORK = Object.fromEntries(AAVE_CHAINS.map((c) => [c.network, c.borrowMode]));
 
 // Aave lists ETH exposure as "WETH" on most chains but as bridged "ETH" on
 // BNB Chain — check both when looking for the borrowable reserve.
 const BORROW_SYMBOLS = ["WETH", "ETH"];
+
+// Monad's Aave market has no ETH reserve with borrowing enabled — the whole
+// point there is a same-asset-class carry (supply USDC, borrow a cheaper
+// stablecoin) rather than a directional ETH position, so "cheapest enabled
+// stablecoin that isn't the collateral itself" is the actual borrow target,
+// not a fixed symbol.
+const STABLE_BORROW_SYMBOLS = ["GHO", "USDT0", "USDT", "AUSD", "USDe", "mUSD", "DAI"];
 
 const APPROVE_ABI = [
   {
@@ -96,10 +109,50 @@ async function fetchAaveRates() {
   if (json.errors?.length) throw new Error(json.errors[0].message);
   const markets = json.data.markets;
 
-  return AAVE_CHAINS.map(({ network, label, chain }) => {
-    const market = markets.find((m) => m.chain.chainId === chain.id);
-    const collateral = market?.reserves.find((r) => r.underlyingToken.symbol === "USDC" && r.supplyInfo.canBeCollateral);
-    const borrow = market?.reserves.find((r) => BORROW_SYMBOLS.includes(r.underlyingToken.symbol));
+  return AAVE_CHAINS.map(({ network, label, chain, borrowMode }) => {
+    // Some chains (Ethereum especially) list several markets — Core plus
+    // specialized ones like Prime/EtherFi/Lido that only carry a subset of
+    // reserves. Picking markets[0] for the chain would silently lock onto
+    // whichever pool the API happens to return first, which may not have
+    // USDC collateral or an ETH reserve at all — so find the market that
+    // actually has both, not just the first one for this chainId.
+    const chainMarkets = markets.filter((m) => m.chain.chainId === chain.id);
+
+    // "eth" mode: find the (single) WETH/ETH reserve. "stable" mode: among
+    // enabled stablecoin reserves that aren't the USDC collateral itself,
+    // pick whichever has the lowest borrow APY — that's the one that
+    // maximizes the supply/borrow spread, i.e. the actual carry.
+    const findBorrow = (reserves, collateralSymbol) =>
+      borrowMode === "stable"
+        ? reserves
+            .filter(
+              (r) =>
+                r.underlyingToken.symbol !== collateralSymbol &&
+                STABLE_BORROW_SYMBOLS.includes(r.underlyingToken.symbol) &&
+                r.borrowInfo?.borrowingState === "ENABLED" &&
+                Number(r.borrowInfo?.availableLiquidity?.amount?.value) > 0
+            )
+            .sort((a, b) => Number(a.borrowInfo.apy.formatted) - Number(b.borrowInfo.apy.formatted))[0]
+        : reserves.find((r) => BORROW_SYMBOLS.includes(r.underlyingToken.symbol));
+
+    let market, collateral, borrow;
+    for (const m of chainMarkets) {
+      const c = m.reserves.find((r) => r.underlyingToken.symbol === "USDC" && r.supplyInfo.canBeCollateral);
+      const b = c ? findBorrow(m.reserves, c.underlyingToken.symbol) : undefined;
+      if (c && b) {
+        market = m;
+        collateral = c;
+        borrow = b;
+        break;
+      }
+    }
+    // No market has both — fall back to the first one just to report *why*
+    // (still lets "no USDC market" vs "no ETH market" distinguish correctly).
+    if (!market) {
+      market = chainMarkets[0];
+      collateral = market?.reserves.find((r) => r.underlyingToken.symbol === "USDC" && r.supplyInfo.canBeCollateral);
+      borrow = collateral ? findBorrow(market.reserves, collateral.underlyingToken.symbol) : undefined;
+    }
     const eligible = Boolean(collateral && borrow && borrow.borrowInfo?.borrowingState === "ENABLED");
 
     return {
@@ -107,7 +160,15 @@ async function fetchAaveRates() {
       label,
       chainId: chain.id,
       eligible,
-      reason: !market ? "no market" : !collateral ? "no USDC market" : !borrow ? "no ETH market" : "borrowing disabled",
+      reason: !market
+        ? "no market"
+        : !collateral
+        ? "no USDC market"
+        : !borrow
+        ? borrowMode === "stable"
+          ? "no stablecoin to borrow"
+          : "no ETH market"
+        : "borrowing disabled",
       poolAddress: market?.address,
       borrowApy: eligible ? Number(borrow.borrowInfo.apy.formatted) : null,
       liquidity: eligible ? Number(borrow.borrowInfo.availableLiquidity.amount.value) : null,
@@ -530,7 +591,7 @@ export default function BorrowPanel({
       setRunStatus("success");
     } catch (err) {
       setRunStatus("error");
-      setRunError(err?.shortMessage || err?.message || "borrow flow failed");
+      setRunError(friendlyTxError(err, "borrow flow failed"));
       setRunLog((log) => log.map((s) => (s.status === "active" ? { ...s, status: "error" } : s)));
     }
   }
