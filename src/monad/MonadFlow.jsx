@@ -459,22 +459,38 @@ export default function MonadFlow() {
       // position borrows against the true total, not just what just got
       // supplied. 95% of that (not Aave's raw max) keeps a sliver of
       // headroom below the liquidation threshold.
+      // Monad's own docs flag this: execution is asynchronous, so a read
+      // right after a receipt confirms can still see pre-supply state on
+      // whichever RPC node answers it. Retry a few times with a short
+      // wait rather than trusting a single read — a stale zero here would
+      // otherwise silently skip the borrow entirely with no error at all.
       setDepositPhase("checking borrow limit...");
-      const [, , availableBorrowsBase] = await readContract(wagmiConfig, {
-        chainId: monad.id,
-        address: market.poolAddress,
-        abi: AAVE_POOL_ABI,
-        functionName: "getUserAccountData",
-        args: [address],
-      });
+      let availableBorrowsBase = 0n;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const accountData = await readContract(wagmiConfig, {
+          chainId: monad.id,
+          address: market.poolAddress,
+          abi: AAVE_POOL_ABI,
+          functionName: "getUserAccountData",
+          args: [address],
+        });
+        availableBorrowsBase = accountData[2];
+        if (availableBorrowsBase > 0n) break;
+        if (attempt < 4) await new Promise((r) => setTimeout(r, 1500));
+      }
       const safeBorrow = (Number(availableBorrowsBase) / 1e8 / market.borrowAsset.usdPrice) * 0.95;
       const borrowAmountBaseUnits = BigInt(toBaseUnits(safeBorrow.toFixed(6), market.borrowAsset.decimals));
 
-      // Nothing meaningful to borrow yet (e.g. this deposit alone doesn't
-      // clear the reserve's minimum, or the account has no borrow room for
-      // some other reason) — land safely on "supplied, one step left"
-      // instead of sending a doomed near-zero borrow call.
-      if (borrowAmountBaseUnits > 0n) {
+      if (borrowAmountBaseUnits === 0n) {
+        // Real anomaly, not the expected path — surface it instead of
+        // quietly landing on "supplied, $0 borrowed" indistinguishable
+        // from a normal success.
+        throw new Error(
+          "supply went through and your collateral is safe, but the pool still isn't showing any borrow room — try clicking deposit again in a moment."
+        );
+      }
+
+      {
         setDepositPhase("borrowing...");
         const borrowArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "borrow", args: [market.borrowAsset.address, borrowAmountBaseUnits, 2n, 0, address], account: address };
         const borrowTx = await writeContract(wagmiConfig, {
@@ -677,9 +693,15 @@ export default function MonadFlow() {
                 ${depositDisplay.toFixed(2)}
               </div>
               <div style={{ fontSize: 11, opacity: 0.7, marginTop: 2 }}>available to spend</div>
-              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                <span style={{ fontSize: 10, border: `1px solid ${paper}`, padding: "4px 8px", opacity: 0.9 }}>[ native yield ]</span>
-                <span style={{ fontSize: 10, border: `1px solid ${paper}`, padding: "4px 8px", opacity: 0.9 }}>[ tax-free spend ]</span>
+              <div style={{ display: "flex", gap: 20, marginTop: 16, fontSize: 12 }}>
+                <div>
+                  <div style={{ fontSize: 9, opacity: 0.6 }}>exp</div>
+                  <div>{cardRevealed ? "12/29" : "••/••"}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 9, opacity: 0.6 }}>cvv</div>
+                  <div>{cardRevealed ? "123" : "•••"}</div>
+                </div>
               </div>
             </>
           ) : (
@@ -703,6 +725,37 @@ export default function MonadFlow() {
 
         {isConnected && (
           <div style={{ border: `1px solid ${ink}`, background: paper, padding: 16 }}>
+          {hasSupplied && (
+            <div style={{ marginBottom: 16, paddingBottom: 14, borderBottom: `1px solid ${line}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 12 }}>
+                deposit <strong>~${depositDisplay.toFixed(2)}</strong>
+              </div>
+              <button
+                className="mf-cta"
+                onClick={handleWithdraw}
+                disabled={withdrawing}
+                title="withdraw to wallet"
+                style={{
+                  width: 34,
+                  height: 34,
+                  flexShrink: 0,
+                  border: `1px solid ${ink}`,
+                  background: "transparent",
+                  color: ink,
+                  fontFamily: "inherit",
+                  fontSize: 16,
+                  cursor: "pointer",
+                  opacity: withdrawing ? 0.6 : 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                {withdrawing ? "…" : "↓"}
+              </button>
+            </div>
+          )}
+          {withdrawStatus === "error" && withdrawError && <div style={{ fontSize: 11, color: "#B3261E", marginBottom: 14 }}>{withdrawError}</div>}
           {true && (
             <>
               <div style={{ fontSize: 11, color: gray, fontWeight: 600, marginBottom: 6 }}>deposit — choose a token</div>
@@ -857,40 +910,6 @@ export default function MonadFlow() {
               })()}
               {depositStatus === "error" && depositError && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>{depositError}</div>}
               {marketStatus === "error" && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>could not load Aave's Monad market — try refreshing.</div>}
-            </>
-          )}
-
-          {hasSupplied && (
-            <>
-              <div style={{ borderTop: `1px solid ${line}`, marginTop: 14, paddingTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ fontSize: 12 }}>
-                  deposit <strong>~${depositDisplay.toFixed(2)}</strong>
-                </div>
-                <button
-                  className="mf-cta"
-                  onClick={handleWithdraw}
-                  disabled={withdrawing}
-                  title="withdraw to wallet"
-                  style={{
-                    width: 34,
-                    height: 34,
-                    flexShrink: 0,
-                    border: `1px solid ${ink}`,
-                    background: "transparent",
-                    color: ink,
-                    fontFamily: "inherit",
-                    fontSize: 16,
-                    cursor: "pointer",
-                    opacity: withdrawing ? 0.6 : 1,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  {withdrawing ? "…" : "↓"}
-                </button>
-              </div>
-              {withdrawStatus === "error" && withdrawError && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>{withdrawError}</div>}
             </>
           )}
 
