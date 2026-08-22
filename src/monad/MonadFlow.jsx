@@ -621,7 +621,8 @@ export default function MonadFlow() {
       setWithdrawPhase("");
     } catch (err) {
       setWithdrawStatus("error");
-      setWithdrawError(friendlyTxError(err, "withdraw failed"));
+      const stepTag = withdrawPhase ? ` (during: ${withdrawPhase})` : "";
+      setWithdrawError(friendlyTxError(err, "withdraw failed") + stepTag);
     }
   }
 
