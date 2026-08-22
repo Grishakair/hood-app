@@ -224,30 +224,41 @@ export default function MonadFlow() {
   // getUserAccountData's Base-currency fields are in the pool's price
   // oracle unit — 8 decimals on every Aave v3 deployment so far, same as
   // the Chainlink feeds it reads from.
+  //
+  // Polls on an interval rather than only re-reading on specific local
+  // triggers (deposit/withdraw completing) — a rejected signature, a
+  // failed step, or any other path that changes on-chain state without
+  // flipping `position`/`withdrawStatus` would otherwise leave this
+  // showing a stale number indefinitely.
   useEffect(() => {
     if (!isConnected || !address || marketStatus !== "ready") {
       setExistingPosition(null);
       return;
     }
     let cancelled = false;
-    readContract(wagmiConfig, {
-      chainId: monad.id,
-      address: market.poolAddress,
-      abi: AAVE_POOL_ABI,
-      functionName: "getUserAccountData",
-      args: [address],
-    })
-      .then(([totalCollateralBase, totalDebtBase, availableBorrowsBase]) => {
-        if (cancelled) return;
-        setExistingPosition({
-          totalCollateralUsd: Number(totalCollateralBase) / 1e8,
-          totalDebtUsd: Number(totalDebtBase) / 1e8,
-          availableBorrowsUsd: Number(availableBorrowsBase) / 1e8,
-        });
+    const poll = () => {
+      readContract(wagmiConfig, {
+        chainId: monad.id,
+        address: market.poolAddress,
+        abi: AAVE_POOL_ABI,
+        functionName: "getUserAccountData",
+        args: [address],
       })
-      .catch(() => !cancelled && setExistingPosition(null));
+        .then(([totalCollateralBase, totalDebtBase, availableBorrowsBase]) => {
+          if (cancelled) return;
+          setExistingPosition({
+            totalCollateralUsd: Number(totalCollateralBase) / 1e8,
+            totalDebtUsd: Number(totalDebtBase) / 1e8,
+            availableBorrowsUsd: Number(availableBorrowsBase) / 1e8,
+          });
+        })
+        .catch(() => {});
+    };
+    poll();
+    const interval = setInterval(poll, 8000);
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
   }, [isConnected, address, marketStatus, market, position, withdrawStatus]);
 
