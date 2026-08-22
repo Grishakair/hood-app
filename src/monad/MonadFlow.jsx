@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAccount, useDisconnect } from "wagmi";
-import { getBalance, readContract, writeContract, sendTransaction, waitForTransactionReceipt, estimateGas, signMessage } from "wagmi/actions";
+import { getBalance, readContract, writeContract, sendTransaction, waitForTransactionReceipt, estimateGas } from "wagmi/actions";
 import { formatUnits, encodeFunctionData } from "viem";
 import { useAppKit } from "@reown/appkit/react";
 import { monad } from "@reown/appkit/networks";
@@ -23,7 +23,6 @@ import {
   ERC20_ABI,
 } from "../lib/shared.js";
 import { fetchMonadAaveMarket, fetchUserDebtAsset, AAVE_POOL_ABI, APPROVE_ABI, MAX_UINT256 } from "./aaveMonad.js";
-import { siweLoginInit, siweLoginComplete, getSpendingPrerequisites, createFundingSource, createCard, getCard, getCardSecrets } from "../lib/immersve.js";
 
 // A short, curated shortlist — not a full search picker — since the ask
 // here is "any of the popular ones", not "every one of the ~180 tokens
@@ -160,15 +159,17 @@ export default function MonadFlow() {
   const [amount, setAmount] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [cardRevealed, setCardRevealed] = useState(false);
-  // Immersve sandbox card state — session (SIWE bearer), the issued card
-  // itself, and its secrets (fetched once via a one-time callback URL,
-  // then cached here since a second fetch attempt would 403).
-  const [cardSession, setCardSession] = useState(null); // { accessToken }
-  const [immersveCard, setImmersveCard] = useState(null); // { id, status }
-  const [cardSecrets, setCardSecrets] = useState(null); // { pan, expiry, cvv2 }
-  const [cardFlowStatus, setCardFlowStatus] = useState("idle"); // idle | running | error
-  const [cardFlowPhase, setCardFlowPhase] = useState("");
-  const [cardFlowError, setCardFlowError] = useState("");
+  // A real Immersve sandbox card was the original plan, but their public
+  // sandbox clientApplicationId is hard-gated behind KYC_REQUIRED on card
+  // creation with no scriptable bypass (confirmed: their documented
+  // partner-KYC "passall" test shortcut itself 403s for this shared
+  // client) — issuing one just isn't possible with these credentials. This
+  // card number is a deterministic, clearly-fake placeholder derived from
+  // the wallet address instead; the balance behind it is real Aave
+  // collateral on Monad mainnet.
+  const [demoCard, setDemoCard] = useState(null); // { pan, expiry, cvv }
+  const [paymentStatus, setPaymentStatus] = useState("idle"); // idle | running | done
+  const [paymentMessage, setPaymentMessage] = useState("");
   const [manualRefundAddress, setManualRefundAddress] = useState("");
   const [manualDeposit, setManualDeposit] = useState(null); // { address, amount, symbol }
 
@@ -635,69 +636,45 @@ export default function MonadFlow() {
     }
   }
 
-  // Drives the eye icon: first click runs the whole Immersve sandbox
-  // pipeline (SIWE login -> prerequisites -> funding source + card ->
-  // reveal), later clicks just toggle visibility of what's already been
-  // fetched — the PAN reveal callback is one-time-use, so this never
-  // re-fetches once cardSecrets is set.
-  async function handleRevealCard() {
-    if (cardRevealed) {
-      setCardRevealed(false);
-      return;
+  // Deterministic from the wallet address (not random) so the same wallet
+  // always sees the same demo number — and prefixed 0000 so it reads as
+  // obviously fake rather than resembling a real card network's BIN range,
+  // same convention as Stripe's well-known 4242... test number.
+  function buildDemoCard(addr) {
+    const hex = (addr || "0x0").slice(2).toLowerCase();
+    let digits = "";
+    for (const ch of hex) {
+      digits += (parseInt(ch, 16) || 0).toString();
+      if (digits.length >= 12) break;
     }
-    if (cardSecrets) {
-      setCardRevealed(true);
-      return;
-    }
+    digits = digits.padEnd(12, "0").slice(0, 12);
+    return { pan: "0000" + digits, expiry: "12/29", cvv: digits.slice(0, 3) };
+  }
+
+  function handleRevealCard() {
     if (!isConnected) {
       open();
       return;
     }
-    setCardFlowError("");
-    setCardFlowStatus("running");
-    try {
-      let token = cardSession?.accessToken;
-      if (!token) {
-        setCardFlowPhase("sign in to activate your card...");
-        const init = await siweLoginInit({ address });
-        const signature = await signMessage(wagmiConfig, { message: init.signingChallenge.message, account: address });
-        setCardFlowPhase("verifying...");
-        const { accessToken } = await siweLoginComplete({ loginRequestId: init.id, signature });
-        token = accessToken;
-        setCardSession({ accessToken });
-      }
-
-      setCardFlowPhase("checking requirements...");
-      // A prerequisites-endpoint hiccup shouldn't block the demo — only a
-      // real "action required" response should stop card issuance.
-      const prereqs = await getSpendingPrerequisites(token).catch(() => null);
-      const prereqList = Array.isArray(prereqs) ? prereqs : prereqs?.prerequisites;
-      const blocked = Array.isArray(prereqList) && prereqList.some((p) => p.status && p.status !== "ok" && p.status !== "pending");
-      if (blocked) throw new Error("a KYC step is required in Immersve's sandbox before a card can be issued");
-
-      let card = immersveCard;
-      if (!card || card.status !== "active") {
-        setCardFlowPhase("activating your card...");
-        const fundingSource = await createFundingSource(token);
-        let current = await createCard(token, { fundingSourceId: fundingSource.id });
-        for (let i = 0; i < 10 && current.status !== "active"; i++) {
-          await new Promise((r) => setTimeout(r, 1500));
-          current = await getCard(token, current.id);
-        }
-        card = current;
-        setImmersveCard(card);
-      }
-
-      setCardFlowPhase("fetching card details...");
-      const secrets = await getCardSecrets(token, card.id);
-      setCardSecrets(secrets);
-      setCardRevealed(true);
-      setCardFlowStatus("idle");
-      setCardFlowPhase("");
-    } catch (err) {
-      setCardFlowStatus("error");
-      setCardFlowError(err?.message || "could not activate the card");
+    if (cardRevealed) {
+      setCardRevealed(false);
+      return;
     }
+    if (!demoCard) setDemoCard(buildDemoCard(address));
+    setCardRevealed(true);
+  }
+
+  // No real card network sits behind this — Immersve's sandbox card
+  // issuance is unreachable (see the demoCard comment above), so this is a
+  // purely cosmetic proof that the balance can be "spent", not a real
+  // authorization/clearing.
+  async function handleSimulatePayment() {
+    setPaymentStatus("running");
+    setPaymentMessage("");
+    await new Promise((r) => setTimeout(r, 900));
+    const amount = Math.min(depositDisplay, 4.2).toFixed(2);
+    setPaymentMessage(`$${amount} simulated charge — Hood Demo Merchant`);
+    setPaymentStatus("done");
   }
 
   const depositing = depositStatus === "running";
@@ -808,20 +785,10 @@ export default function MonadFlow() {
           )}
 
           <div style={{ marginTop: 20, fontSize: 20, letterSpacing: 2 }}>
-            {cardFlowStatus === "running"
-              ? cardFlowPhase || "working..."
-              : cardRevealed && cardSecrets
-              ? (cardSecrets.pan || cardSecrets.cardNumber || "").replace(/(.{4})/g, "$1  ").trim()
-              : "••••  ••••  ••••  ••••"}
+            {cardRevealed && demoCard ? demoCard.pan.replace(/(.{4})/g, "$1  ").trim() : "••••  ••••  ••••  ••••"}
           </div>
-          {cardFlowStatus === "error" && cardFlowError && (
-            <div style={{ fontSize: 10, color: "#FF8A80", marginTop: 4 }}>{cardFlowError}</div>
-          )}
-          {cardRevealed && cardSecrets && (
-            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>real Immersve sandbox card — test funds only</div>
-          )}
-          {!cardSecrets && cardFlowStatus !== "running" && cardFlowStatus !== "error" && (
-            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>click the eye to activate a real sandbox card</div>
+          {!cardRevealed && (
+            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>click the eye to reveal your card number</div>
           )}
 
           {hasSupplied && (
@@ -829,18 +796,39 @@ export default function MonadFlow() {
               <div style={{ display: "flex", gap: 20, marginTop: 16, fontSize: 12 }}>
                 <div>
                   <div style={{ fontSize: 9, opacity: 0.6 }}>exp</div>
-                  <div>{cardRevealed && cardSecrets ? cardSecrets.expiry || cardSecrets.expiryDate || "—" : "••/••"}</div>
+                  <div>{cardRevealed && demoCard ? demoCard.expiry : "••/••"}</div>
                 </div>
                 <div>
                   <div style={{ fontSize: 9, opacity: 0.6 }}>cvv</div>
-                  <div>{cardRevealed && cardSecrets ? cardSecrets.cvv2 || cardSecrets.cvv || "—" : "•••"}</div>
+                  <div>{cardRevealed && demoCard ? demoCard.cvv : "•••"}</div>
                 </div>
               </div>
+              <button
+                className="mf-cta"
+                onClick={handleSimulatePayment}
+                disabled={paymentStatus === "running"}
+                style={{
+                  marginTop: 14,
+                  border: `1px solid ${paper}`,
+                  background: "transparent",
+                  color: paper,
+                  fontFamily: "inherit",
+                  fontSize: 11,
+                  padding: "6px 12px",
+                  cursor: paymentStatus === "running" ? "default" : "pointer",
+                }}
+              >
+                {paymentStatus === "running" ? "processing..." : "[ simulate payment ]"}
+              </button>
+              {paymentStatus === "done" && paymentMessage && (
+                <div style={{ fontSize: 10, opacity: 0.7, marginTop: 6 }}>✓ {paymentMessage}</div>
+              )}
             </>
           )}
         </div>
         <div style={{ fontSize: 10, color: gray, marginBottom: 20 }}>
-          sandbox demo — Monad hackathon. card is a real Immersve sandbox card, no real funds move.
+          sandbox demo — Monad hackathon. card number is a demo placeholder; the balance above is real Aave collateral
+          on Monad mainnet.
         </div>
 
         {/* controls */}
