@@ -210,6 +210,16 @@ export default function MonadFlow() {
   const pickedDecimals = pickedRecord?.decimals ?? 18;
   const needsSwap = Boolean(pickedToken && !(pickedToken.symbol === "USDC" && pickedToken.network === "monad"));
 
+  // What's actually in the wallet, in a plain token/chain/amount list —
+  // held balances first (biggest first), then the rest of the popular set
+  // still pickable with a "0" amount rather than hidden entirely.
+  const pickerRows = POPULAR_TOKENS.map((t) => {
+    const record = findTokenRecord(liveTokens, t.symbol, t.network);
+    const bal = balances[`${t.symbol}|${t.network}`];
+    const amountNum = bal !== undefined ? Number(formatUnits(bal, record?.decimals ?? 18)) : 0;
+    return { ...t, amountNum, held: bal !== undefined && bal > 0n };
+  }).sort((a, b) => (b.held === a.held ? b.amountNum - a.amountNum : b.held - a.held));
+
   function fillMax() {
     if (pickedBalance === undefined) return;
     setAmount(truncateDecimalString(formatUnits(pickedBalance, pickedDecimals), pickedDecimals));
@@ -491,12 +501,14 @@ export default function MonadFlow() {
               </div>
 
               {pickerOpen && (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 12 }}>
-                  {POPULAR_TOKENS.map((t) => {
-                    const bal = balances[`${t.symbol}|${t.network}`];
+                <div style={{ border: `1px solid ${line}`, marginBottom: 12 }}>
+                  {balancesStatus === "loading" && (
+                    <div style={{ padding: 10, fontSize: 11, color: gray }}>checking your balances...</div>
+                  )}
+                  {pickerRows.map((t) => {
                     const isActive = pickedToken?.symbol === t.symbol && pickedToken?.network === t.network;
                     return (
-                      <span
+                      <div
                         key={`${t.symbol}|${t.network}`}
                         onClick={() => {
                           setPickedToken(t);
@@ -504,21 +516,22 @@ export default function MonadFlow() {
                           setPickerOpen(false);
                         }}
                         style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          padding: "9px 10px",
                           fontSize: 12,
-                          padding: "8px 10px",
-                          border: `1px solid ${ink}`,
                           cursor: "pointer",
+                          borderTop: `1px solid ${line}`,
                           background: isActive ? ink : "transparent",
-                          color: isActive ? paper : ink,
+                          color: isActive ? paper : t.held ? ink : gray,
                         }}
                       >
-                        {t.symbol} <span style={{ opacity: 0.7 }}>· {t.chainLabel}</span>
-                        {bal !== undefined && bal > 0n && (
-                          <div style={{ fontSize: 10, opacity: 0.7 }}>
-                            {truncateDecimalString(formatUnits(bal, findTokenRecord(liveTokens, t.symbol, t.network)?.decimals ?? 18), 4)}
-                          </div>
-                        )}
-                      </span>
+                        <span>
+                          {t.symbol} <span style={{ opacity: 0.7 }}>on {t.chainLabel}</span>
+                        </span>
+                        <span>{t.held ? t.amountNum.toFixed(4) : "—"}</span>
+                      </div>
                     );
                   })}
                 </div>
