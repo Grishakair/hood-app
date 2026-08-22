@@ -72,7 +72,40 @@ export async function fetchMonadAaveMarket() {
       usdPrice: Number(borrow.usdExchangeRate),
       liquidity: Number(borrow.borrowInfo.availableLiquidity.amount.value),
     },
+    // Every stablecoin reserve that *could* have been picked as "cheapest"
+    // on some earlier visit — "cheapest right now" drifts as rates move,
+    // so an old debt isn't guaranteed to be in whatever's cheapest today.
+    // Withdraw probes these to find which one a wallet actually owes,
+    // rather than assuming it's still this session's current pick.
+    allBorrowCandidates: market.reserves
+      .filter((r) => r.underlyingToken.symbol !== collateral.underlyingToken.symbol && STABLE_BORROW_SYMBOLS.includes(r.underlyingToken.symbol))
+      .map((r) => ({ symbol: r.underlyingToken.symbol, address: r.underlyingToken.address, decimals: r.underlyingToken.decimals })),
   };
+}
+
+// Ground truth for "what does this wallet actually owe" — Aave's own API,
+// not a guess based on whichever reserve looks cheapest today. Falls back
+// to market.borrowAsset if the query comes back empty (no debt found, or
+// the API hiccups) so a caller can still attempt something sane.
+export async function fetchUserDebtAsset(market, userAddress) {
+  try {
+    const query = `query T($r: UserBorrowsRequest!) { userBorrows(request: $r) { currency { symbol } } }`;
+    const res = await fetch(AAVE_GRAPHQL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query,
+        variables: { r: { markets: [{ address: market.poolAddress, chainId: monad.id }], user: userAddress, orderBy: { debt: "DESC" } } },
+      }),
+    });
+    const json = await res.json();
+    const symbol = json?.data?.userBorrows?.[0]?.currency?.symbol;
+    const match = symbol && [market.borrowAsset, ...market.allBorrowCandidates].find((c) => c.symbol === symbol);
+    if (match) return match;
+  } catch {
+    // fall through to the default below
+  }
+  return market.borrowAsset;
 }
 
 export const AAVE_POOL_ABI = [

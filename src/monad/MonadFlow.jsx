@@ -22,7 +22,7 @@ import {
   AURORA_DEPOSIT_SUBMIT_URL,
   ERC20_ABI,
 } from "../lib/shared.js";
-import { fetchMonadAaveMarket, AAVE_POOL_ABI, APPROVE_ABI, MAX_UINT256 } from "./aaveMonad.js";
+import { fetchMonadAaveMarket, fetchUserDebtAsset, AAVE_POOL_ABI, APPROVE_ABI, MAX_UINT256 } from "./aaveMonad.js";
 
 // A short, curated shortlist — not a full search picker — since the ask
 // here is "any of the popular ones", not "every one of the ~180 tokens
@@ -560,17 +560,28 @@ export default function MonadFlow() {
     try {
       await ensureChain(monad.id);
 
+      // Refetch — same reasoning as handleDeposit: which reserve is
+      // "cheapest" drifts, and this session's `market` snapshot could be
+      // stale by the time withdraw is clicked.
+      const market = await fetchMonadAaveMarket();
+      setMarket(market);
+
       // Skip repay entirely when there's no real debt — e.g. a supply that
       // went through on its own (borrow failed or was never attempted).
-      // Also avoids repaying the wrong reserve: which stablecoin is
-      // "cheapest to borrow" can drift day to day, so market.borrowAsset
-      // might not even be what an old debt is actually denominated in.
       if (hasDebt) {
+        setWithdrawPhase("finding what you owe...");
+        // Don't assume today's "cheapest" reserve is what an old debt is
+        // actually denominated in — ask Aave's own API which reserve this
+        // account actually borrowed, rather than guessing (an estimateGas
+        // probe can't tell "no debt" apart from "debt exists but not yet
+        // approved" — both revert the same way, so it's not usable here).
+        const debtAsset = await fetchUserDebtAsset(market, address);
+
         setWithdrawPhase("clearing your balance...");
-        const repayApproveArgs = { chainId: monad.id, to: market.borrowAsset.address, abi: APPROVE_ABI, functionName: "approve", args: [market.poolAddress, MAX_UINT256], account: address };
+        const repayApproveArgs = { chainId: monad.id, to: debtAsset.address, abi: APPROVE_ABI, functionName: "approve", args: [market.poolAddress, MAX_UINT256], account: address };
         const repayApproveTx = await writeContract(wagmiConfig, {
           chainId: monad.id,
-          address: market.borrowAsset.address,
+          address: debtAsset.address,
           abi: APPROVE_ABI,
           functionName: "approve",
           args: [market.poolAddress, MAX_UINT256],
@@ -578,13 +589,13 @@ export default function MonadFlow() {
         });
         await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: repayApproveTx });
 
-        const repayArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "repay", args: [market.borrowAsset.address, MAX_UINT256, 2n, address], account: address };
+        const repayArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "repay", args: [debtAsset.address, MAX_UINT256, 2n, address], account: address };
         const repayTx = await writeContract(wagmiConfig, {
           chainId: monad.id,
           address: market.poolAddress,
           abi: AAVE_POOL_ABI,
           functionName: "repay",
-          args: [market.borrowAsset.address, MAX_UINT256, 2n, address],
+          args: [debtAsset.address, MAX_UINT256, 2n, address],
           gas: await estimateGasBuffered(repayArgs),
         });
         await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: repayTx });
