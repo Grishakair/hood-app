@@ -691,19 +691,45 @@ export default function MonadFlow() {
             </div>
           </div>
 
-          <div style={{ marginTop: 22, fontSize: 20, letterSpacing: 2 }}>
+          {hasSupplied ? (
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 22 }}>
+              <div style={{ fontSize: 26, letterSpacing: 1 }}>${depositDisplay.toFixed(2)}</div>
+              <div style={{ fontSize: 11, opacity: 0.7 }}>available to spend</div>
+              {market && (
+                <span className="mf-tip-wrap" style={{ marginLeft: 2 }}>
+                  <span
+                    style={{
+                      fontSize: 10,
+                      border: `1px solid ${paper}`,
+                      padding: "2px 6px",
+                      opacity: 0.85,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    apy {market.supplyApy.toFixed(1)}%
+                  </span>
+                  <span className="mf-tip" style={{ color: paper, top: 20 }}>
+                    this is native yield — your collateral keeps earning this supply APY on Aave the whole time the
+                    card is active, no action needed.
+                  </span>
+                </span>
+              )}
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, opacity: 0.6, marginTop: 22 }}>
+              {!isConnected ? "connect a wallet to activate" : "deposit to activate your card"}
+            </div>
+          )}
+
+          <div style={{ marginTop: 20, fontSize: 20, letterSpacing: 2 }}>
             {cardRevealed ? "4242  4242  4242  4242" : "••••  ••••  ••••  ••••"}
           </div>
           {cardRevealed && (
             <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>demo number — sandbox card issuance connects here next</div>
           )}
 
-          {hasSupplied ? (
+          {hasSupplied && (
             <>
-              <div style={{ marginTop: 16, fontSize: 26, letterSpacing: 1 }}>
-                ${depositDisplay.toFixed(2)}
-              </div>
-              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 2 }}>available to spend</div>
               <div style={{ display: "flex", gap: 20, marginTop: 16, fontSize: 12 }}>
                 <div>
                   <div style={{ fontSize: 9, opacity: 0.6 }}>exp</div>
@@ -713,12 +739,6 @@ export default function MonadFlow() {
                   <div style={{ fontSize: 9, opacity: 0.6 }}>cvv</div>
                   <div>{cardRevealed ? "123" : "•••"}</div>
                 </div>
-              </div>
-            </>
-          ) : (
-            <>
-              <div style={{ fontSize: 11, opacity: 0.6, marginTop: 16 }}>
-                {!isConnected ? "connect a wallet to activate" : "deposit to activate your card"}
               </div>
             </>
           )}
