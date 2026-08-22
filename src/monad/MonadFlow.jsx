@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAccount, useDisconnect } from "wagmi";
-import { getBalance, readContract, writeContract, sendTransaction, waitForTransactionReceipt, estimateGas } from "wagmi/actions";
+import { getBalance, readContract, writeContract, sendTransaction, waitForTransactionReceipt, estimateGas, signMessage } from "wagmi/actions";
 import { formatUnits, encodeFunctionData } from "viem";
 import { useAppKit } from "@reown/appkit/react";
 import { monad } from "@reown/appkit/networks";
@@ -23,6 +23,7 @@ import {
   ERC20_ABI,
 } from "../lib/shared.js";
 import { fetchMonadAaveMarket, fetchUserDebtAsset, AAVE_POOL_ABI, APPROVE_ABI, MAX_UINT256 } from "./aaveMonad.js";
+import { siweLoginInit, siweLoginComplete, getSpendingPrerequisites, createFundingSource, createCard, getCard, getCardSecrets } from "../lib/immersve.js";
 
 // A short, curated shortlist — not a full search picker — since the ask
 // here is "any of the popular ones", not "every one of the ~180 tokens
@@ -159,6 +160,15 @@ export default function MonadFlow() {
   const [amount, setAmount] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [cardRevealed, setCardRevealed] = useState(false);
+  // Immersve sandbox card state — session (SIWE bearer), the issued card
+  // itself, and its secrets (fetched once via a one-time callback URL,
+  // then cached here since a second fetch attempt would 403).
+  const [cardSession, setCardSession] = useState(null); // { accessToken }
+  const [immersveCard, setImmersveCard] = useState(null); // { id, status }
+  const [cardSecrets, setCardSecrets] = useState(null); // { pan, expiry, cvv2 }
+  const [cardFlowStatus, setCardFlowStatus] = useState("idle"); // idle | running | error
+  const [cardFlowPhase, setCardFlowPhase] = useState("");
+  const [cardFlowError, setCardFlowError] = useState("");
   const [manualRefundAddress, setManualRefundAddress] = useState("");
   const [manualDeposit, setManualDeposit] = useState(null); // { address, amount, symbol }
 
@@ -625,6 +635,71 @@ export default function MonadFlow() {
     }
   }
 
+  // Drives the eye icon: first click runs the whole Immersve sandbox
+  // pipeline (SIWE login -> prerequisites -> funding source + card ->
+  // reveal), later clicks just toggle visibility of what's already been
+  // fetched — the PAN reveal callback is one-time-use, so this never
+  // re-fetches once cardSecrets is set.
+  async function handleRevealCard() {
+    if (cardRevealed) {
+      setCardRevealed(false);
+      return;
+    }
+    if (cardSecrets) {
+      setCardRevealed(true);
+      return;
+    }
+    if (!isConnected) {
+      open();
+      return;
+    }
+    setCardFlowError("");
+    setCardFlowStatus("running");
+    try {
+      let token = cardSession?.accessToken;
+      if (!token) {
+        setCardFlowPhase("sign in to activate your card...");
+        const init = await siweLoginInit({ address, network: "monad" });
+        const signature = await signMessage(wagmiConfig, { message: init.signingChallenge.message, account: address });
+        setCardFlowPhase("verifying...");
+        const { accessToken } = await siweLoginComplete({ loginRequestId: init.id, signature });
+        token = accessToken;
+        setCardSession({ accessToken });
+      }
+
+      setCardFlowPhase("checking requirements...");
+      // A prerequisites-endpoint hiccup shouldn't block the demo — only a
+      // real "action required" response should stop card issuance.
+      const prereqs = await getSpendingPrerequisites(token).catch(() => null);
+      const prereqList = Array.isArray(prereqs) ? prereqs : prereqs?.prerequisites;
+      const blocked = Array.isArray(prereqList) && prereqList.some((p) => p.status && p.status !== "ok" && p.status !== "pending");
+      if (blocked) throw new Error("a KYC step is required in Immersve's sandbox before a card can be issued");
+
+      let card = immersveCard;
+      if (!card || card.status !== "active") {
+        setCardFlowPhase("activating your card...");
+        const fundingSource = await createFundingSource(token);
+        let current = await createCard(token, { fundingSourceId: fundingSource.id });
+        for (let i = 0; i < 10 && current.status !== "active"; i++) {
+          await new Promise((r) => setTimeout(r, 1500));
+          current = await getCard(token, current.id);
+        }
+        card = current;
+        setImmersveCard(card);
+      }
+
+      setCardFlowPhase("fetching card details...");
+      const secrets = await getCardSecrets(token, card.id);
+      setCardSecrets(secrets);
+      setCardRevealed(true);
+      setCardFlowStatus("idle");
+      setCardFlowPhase("");
+    } catch (err) {
+      setCardFlowStatus("error");
+      setCardFlowError(err?.message || "could not activate the card");
+    }
+  }
+
   const depositing = depositStatus === "running";
   const withdrawing = withdrawStatus === "running";
 
@@ -671,7 +746,7 @@ export default function MonadFlow() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span
-                onClick={() => setCardRevealed((v) => !v)}
+                onClick={handleRevealCard}
                 style={{ cursor: "pointer", opacity: 0.85, display: "flex" }}
                 title={cardRevealed ? "hide card number" : "reveal card number"}
               >
@@ -733,10 +808,20 @@ export default function MonadFlow() {
           )}
 
           <div style={{ marginTop: 20, fontSize: 20, letterSpacing: 2 }}>
-            {cardRevealed ? "4242  4242  4242  4242" : "••••  ••••  ••••  ••••"}
+            {cardFlowStatus === "running"
+              ? cardFlowPhase || "working..."
+              : cardRevealed && cardSecrets
+              ? (cardSecrets.pan || cardSecrets.cardNumber || "").replace(/(.{4})/g, "$1  ").trim()
+              : "••••  ••••  ••••  ••••"}
           </div>
-          {cardRevealed && (
-            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>demo number — sandbox card issuance connects here next</div>
+          {cardFlowStatus === "error" && cardFlowError && (
+            <div style={{ fontSize: 10, color: "#FF8A80", marginTop: 4 }}>{cardFlowError}</div>
+          )}
+          {cardRevealed && cardSecrets && (
+            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>real Immersve sandbox card — test funds only</div>
+          )}
+          {!cardSecrets && cardFlowStatus !== "running" && cardFlowStatus !== "error" && (
+            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>click the eye to activate a real sandbox card</div>
           )}
 
           {hasSupplied && (
@@ -744,18 +829,18 @@ export default function MonadFlow() {
               <div style={{ display: "flex", gap: 20, marginTop: 16, fontSize: 12 }}>
                 <div>
                   <div style={{ fontSize: 9, opacity: 0.6 }}>exp</div>
-                  <div>{cardRevealed ? "12/29" : "••/••"}</div>
+                  <div>{cardRevealed && cardSecrets ? cardSecrets.expiry || cardSecrets.expiryDate || "—" : "••/••"}</div>
                 </div>
                 <div>
                   <div style={{ fontSize: 9, opacity: 0.6 }}>cvv</div>
-                  <div>{cardRevealed ? "123" : "•••"}</div>
+                  <div>{cardRevealed && cardSecrets ? cardSecrets.cvv2 || cardSecrets.cvv || "—" : "•••"}</div>
                 </div>
               </div>
             </>
           )}
         </div>
         <div style={{ fontSize: 10, color: gray, marginBottom: 20 }}>
-          sandbox demo — Monad hackathon. no real card issuance in this build yet.
+          sandbox demo — Monad hackathon. card is a real Immersve sandbox card, no real funds move.
         </div>
 
         {/* controls */}
