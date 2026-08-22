@@ -4,12 +4,9 @@ import { getBalance, readContract, writeContract, sendTransaction, waitForTransa
 import { formatUnits } from "viem";
 import { useAppKit } from "@reown/appkit/react";
 import { monad } from "@reown/appkit/networks";
-import { wagmiConfig } from "../config/appkit.js";
+import { wagmiConfig } from "./appkit.js";
+import { CHAIN_ID_BY_NETWORK, NATIVE_SYMBOL_BY_CHAIN, EXPLORER_BY_CHAIN, ensureChain } from "./chains.js";
 import {
-  CHAIN_ID_BY_NETWORK,
-  NATIVE_SYMBOL_BY_CHAIN,
-  EXPLORER_BY_CHAIN,
-  ensureChain,
   toBaseUnits,
   truncateDecimalString,
   findTokenRecord,
@@ -28,16 +25,26 @@ import { fetchMonadAaveMarket, AAVE_POOL_ABI, APPROVE_ABI, MAX_UINT256 } from ".
 // here is "any of the popular ones", not "every one of the ~180 tokens
 // Aurora Intents can move". Whatever's picked converts to USDC on Monad
 // via the same Intents Connect swap Borrow.jsx uses, then gets supplied.
+// Entries with no CHAIN_ID_BY_NETWORK mapping (tron) are non-EVM — the
+// connected wallet can't sign on those chains at all, so those go through
+// a manual "send to this address yourself" deposit instead of an
+// auto-signed transfer.
 const POPULAR_TOKENS = [
   { symbol: "USDC", network: "monad", chainLabel: "Monad" },
   { symbol: "MON", network: "monad", chainLabel: "Monad" },
   { symbol: "USDC", network: "base", chainLabel: "Base" },
   { symbol: "ETH", network: "eth", chainLabel: "Ethereum" },
   { symbol: "ETH", network: "base", chainLabel: "Base" },
+  { symbol: "ETH", network: "arb", chainLabel: "Arbitrum" },
+  { symbol: "USDC", network: "arb", chainLabel: "Arbitrum" },
+  { symbol: "USDT0", network: "arb", chainLabel: "Arbitrum" },
   { symbol: "USDT", network: "eth", chainLabel: "Ethereum" },
+  { symbol: "USDT", network: "tron", chainLabel: "Tron" },
   { symbol: "BNB", network: "bsc", chainLabel: "BNB Chain" },
   { symbol: "POL", network: "pol", chainLabel: "Polygon" },
 ];
+
+const isTronAddress = (value) => /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(value || "");
 
 const FEATURE_CARDS = [
   {
@@ -110,6 +117,8 @@ export default function MonadFlow() {
   const [pickedToken, setPickedToken] = useState(null);
   const [amount, setAmount] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [manualRefundAddress, setManualRefundAddress] = useState("");
+  const [manualDeposit, setManualDeposit] = useState(null); // { address, amount, symbol }
 
   const [market, setMarket] = useState(null);
   const [marketStatus, setMarketStatus] = useState("loading");
@@ -209,6 +218,7 @@ export default function MonadFlow() {
   const pickedBalance = pickedToken ? balances[`${pickedToken.symbol}|${pickedToken.network}`] : undefined;
   const pickedDecimals = pickedRecord?.decimals ?? 18;
   const needsSwap = Boolean(pickedToken && !(pickedToken.symbol === "USDC" && pickedToken.network === "monad"));
+  const pickedIsManual = Boolean(pickedToken && !CHAIN_ID_BY_NETWORK[pickedToken.network]);
 
   // What's actually in the wallet, in a plain token/chain/amount list —
   // held balances first (biggest first), then the rest of the popular set
@@ -230,6 +240,11 @@ export default function MonadFlow() {
   // phase text is a friendly gloss, not a technical step tracker.
   async function handleDeposit() {
     if (!pickedToken || !amount || Number(amount) <= 0 || !market) return;
+    if (pickedIsManual && !isTronAddress(manualRefundAddress)) {
+      setDepositStatus("error");
+      setDepositError(`enter a valid ${pickedToken.chainLabel} address above for refunds`);
+      return;
+    }
     setDepositError("");
     setDepositStatus("running");
     try {
@@ -237,7 +252,43 @@ export default function MonadFlow() {
       const originNetwork = pickedToken.network;
       const originChainId = CHAIN_ID_BY_NETWORK[originNetwork];
 
-      if (needsSwap) {
+      if (needsSwap && pickedIsManual) {
+        // Non-EVM origin (Tron) — the connected wallet can't sign there at
+        // all, so this is Aurora's deposit-address flow instead: get a
+        // quote, show the address, and wait for the user to send it
+        // themselves from whatever wallet they actually hold it in.
+        setDepositPhase("getting a deposit address...");
+        const originToken = pickedRecord;
+        const destToken = findTokenRecord(liveTokens, "USDC", "monad");
+        if (!originToken?.assetId || !destToken?.assetId) throw new Error("token data is still loading — try again in a moment");
+
+        const amountBaseUnits = toBaseUnits(amount, originToken.decimals);
+        const res = await fetch(AURORA_QUOTE_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            buildQuoteBody({ dry: false, originToken, destToken, amountBaseUnits, slippageBps: 50, recipient: address, refundTo: manualRefundAddress })
+          ),
+        });
+        if (!res.ok) throw new Error(await quoteErrorMessage(res));
+        const quoteData = await res.json();
+        const depositAddress = quoteData.quote?.depositAddress;
+        if (!depositAddress) throw new Error("no deposit address returned");
+
+        setManualDeposit({ address: depositAddress, amount, symbol: originToken.symbol });
+        setDepositPhase("waiting for your deposit...");
+        await pollUntilSettled(depositAddress, (detail) => setDepositPhase(STATUS_DETAIL_LABEL[detail] || "settling..."));
+        setManualDeposit(null);
+
+        await ensureChain(monad.id);
+        supplyAmountBaseUnits = await readContract(wagmiConfig, {
+          chainId: monad.id,
+          address: market.collateralAsset.address,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [address],
+        });
+      } else if (needsSwap) {
         setDepositPhase("moving your deposit...");
         const originToken = pickedRecord;
         const destToken = findTokenRecord(liveTokens, "USDC", "monad");
@@ -331,6 +382,7 @@ export default function MonadFlow() {
       setDepositStatus("idle");
       setDepositPhase("");
     } catch (err) {
+      setManualDeposit(null);
       setDepositStatus("error");
       setDepositError(friendlyTxError(err, "deposit failed"));
     }
@@ -493,15 +545,34 @@ export default function MonadFlow() {
 
           {isConnected && !position && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-                <div style={{ fontSize: 11, color: gray, fontWeight: 600 }}>deposit</div>
-                <span onClick={() => setPickerOpen((v) => !v)} style={{ fontSize: 11, color: gray, cursor: "pointer", textDecoration: "underline" }}>
-                  {pickedToken ? `${pickedToken.symbol} on ${POPULAR_TOKENS.find((p) => p.symbol === pickedToken.symbol && p.network === pickedToken.network)?.chainLabel}` : "[ choose a token ]"}
+              <div style={{ fontSize: 11, color: gray, fontWeight: 600, marginBottom: 6 }}>deposit — choose a token</div>
+              <div
+                onClick={() => setPickerOpen((v) => !v)}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  border: `1px solid ${ink}`,
+                  padding: "10px 12px",
+                  marginBottom: pickerOpen ? 0 : 12,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                <span style={{ color: pickedToken ? ink : "#B9B6AB" }}>
+                  {pickedToken ? (
+                    <>
+                      {pickedToken.symbol} <span style={{ color: gray }}>on {pickedToken.chainLabel}</span>
+                    </>
+                  ) : (
+                    "choose a token"
+                  )}
                 </span>
+                <span style={{ color: gray, fontSize: 11 }}>{pickerOpen ? "▲" : "▼"}</span>
               </div>
 
               {pickerOpen && (
-                <div style={{ border: `1px solid ${line}`, marginBottom: 12 }}>
+                <div style={{ border: `1px solid ${ink}`, borderTop: "none", marginBottom: 12, maxHeight: 260, overflowY: "auto" }}>
                   {balancesStatus === "loading" && (
                     <div style={{ padding: 10, fontSize: 11, color: gray }}>checking your balances...</div>
                   )}
@@ -557,8 +628,38 @@ export default function MonadFlow() {
                 </div>
               )}
 
+              {pickedIsManual && !manualDeposit && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: gray, marginBottom: 4 }}>your {pickedToken.chainLabel} address (for refunds)</div>
+                  <input
+                    value={manualRefundAddress}
+                    onChange={(e) => setManualRefundAddress(e.target.value)}
+                    placeholder={`address on ${pickedToken.chainLabel}`}
+                    className="mf-field"
+                    style={{ width: "100%", border: "none", borderBottom: `1px solid ${line}`, outline: "none", padding: "6px 0", fontSize: 13, fontFamily: "inherit", background: "transparent", color: ink }}
+                  />
+                </div>
+              )}
+
+              {manualDeposit && (
+                <div style={{ border: `1px solid ${ink}`, padding: 12, marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: gray, marginBottom: 6 }}>
+                    send exactly <strong style={{ color: ink }}>{manualDeposit.amount} {manualDeposit.symbol}</strong> to:
+                  </div>
+                  <div
+                    onClick={() => navigator.clipboard.writeText(manualDeposit.address)}
+                    style={{ fontSize: 12, wordBreak: "break-all", cursor: "pointer", textDecoration: "underline" }}
+                    title="click to copy"
+                  >
+                    {manualDeposit.address}
+                  </div>
+                  <div style={{ fontSize: 11, color: gray, marginTop: 8 }}>{depositPhase || "waiting for your deposit..."}</div>
+                </div>
+              )}
+
               {(() => {
-                const missingInput = !pickedToken || !amount || Number(amount) <= 0;
+                const missingInput =
+                  !pickedToken || !amount || Number(amount) <= 0 || (pickedIsManual && !isTronAddress(manualRefundAddress));
                 const notReady = missingInput || marketStatus !== "ready";
                 const isDisabled = depositing || notReady;
                 return (
@@ -584,7 +685,11 @@ export default function MonadFlow() {
                     </button>
                     {missingInput && (
                       <div style={{ fontSize: 11, color: gray, marginTop: 8 }}>
-                        {!pickedToken ? "choose a token above first." : "enter an amount to deposit."}
+                        {!pickedToken
+                          ? "choose a token above first."
+                          : !amount || Number(amount) <= 0
+                          ? "enter an amount to deposit."
+                          : `enter your ${pickedToken.chainLabel} address above for refunds.`}
                       </div>
                     )}
                   </>

@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import MonadFlow from "./monad/MonadFlow.jsx";
-import { wagmiConfig } from "./config/appkit.js";
+import { wagmiConfig } from "./monad/appkit.js";
 import "./index.css";
 
 const queryClient = new QueryClient();
