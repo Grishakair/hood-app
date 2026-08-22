@@ -525,25 +525,39 @@ export default function MonadFlow() {
                 </div>
               )}
 
-              <button
-                className="mf-cta"
-                onClick={handleDeposit}
-                disabled={depositing || !pickedToken || !amount || Number(amount) <= 0 || marketStatus !== "ready"}
-                style={{
-                  width: "100%",
-                  padding: "11px 0",
-                  border: `1px solid ${ink}`,
-                  background: "transparent",
-                  color: ink,
-                  fontFamily: "inherit",
-                  fontSize: 13,
-                  letterSpacing: 1,
-                  cursor: "pointer",
-                  opacity: depositing ? 0.7 : 1,
-                }}
-              >
-                {depositing ? depositPhase || "working..." : "deposit"}
-              </button>
+              {(() => {
+                const missingInput = !pickedToken || !amount || Number(amount) <= 0;
+                const notReady = missingInput || marketStatus !== "ready";
+                const isDisabled = depositing || notReady;
+                return (
+                  <>
+                    <button
+                      className="mf-cta"
+                      onClick={handleDeposit}
+                      disabled={isDisabled}
+                      style={{
+                        width: "100%",
+                        padding: "11px 0",
+                        border: `1px solid ${notReady && !depositing ? line : ink}`,
+                        background: "transparent",
+                        color: notReady && !depositing ? gray : ink,
+                        fontFamily: "inherit",
+                        fontSize: 13,
+                        letterSpacing: 1,
+                        cursor: isDisabled ? "not-allowed" : "pointer",
+                        opacity: depositing ? 0.7 : 1,
+                      }}
+                    >
+                      {depositing ? depositPhase || "working..." : "deposit"}
+                    </button>
+                    {missingInput && (
+                      <div style={{ fontSize: 11, color: gray, marginTop: 8 }}>
+                        {!pickedToken ? "choose a token above first." : "enter an amount to deposit."}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
               {depositStatus === "error" && depositError && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>{depositError}</div>}
               {marketStatus === "error" && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>could not load Aave's Monad market — try refreshing.</div>}
             </>
