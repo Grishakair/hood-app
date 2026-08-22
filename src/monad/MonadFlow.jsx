@@ -533,21 +533,20 @@ export default function MonadFlow() {
     }
   }
 
-  // Aave's own account data is the real source of truth for whether this
-  // wallet has anything to withdraw — not just this session's `position`,
-  // which would miss a supply that succeeded in an earlier attempt (e.g.
-  // one where borrow then failed) or survive a page reload.
-  const hasSupplied = Boolean(position) || (existingPosition?.totalCollateralUsd ?? 0) > 0.000001;
-  const hasDebt = Boolean(position?.borrowedFormatted && Number(position.borrowedFormatted) > 0) || (existingPosition?.totalDebtUsd ?? 0) > 0.000001;
+  // Aave's own polled account data is the ONLY source of truth for balance
+  // display — deliberately not `position` (this session's log of its own
+  // last action). position.borrowedFormatted is how much got borrowed in
+  // that one transaction, not the account's running total debt, so after
+  // a second deposit on top of an existing position it would show just
+  // the latest small increment instead of what's actually owed overall —
+  // a real bug caught live (showed $1.93 while the chain read $7.82).
+  const hasSupplied = (existingPosition?.totalCollateralUsd ?? 0) > 0.000001;
+  const hasDebt = (existingPosition?.totalDebtUsd ?? 0) > 0.000001;
   // The one number the user actually sees — "deposit" means spendable
   // balance, i.e. what got borrowed, not the collateral locked behind it.
   // If collateral is in but the borrow leg hasn't landed yet, show what's
   // available to activate instead of a confusing $0.
-  const depositDisplay = position
-    ? Number(position.borrowedFormatted)
-    : hasDebt
-    ? existingPosition.totalDebtUsd
-    : (existingPosition?.availableBorrowsUsd ?? 0) * 0.95;
+  const depositDisplay = hasDebt ? existingPosition.totalDebtUsd : (existingPosition?.availableBorrowsUsd ?? 0) * 0.95;
 
   // Full unwind, back to the wallet — repay the whole debt, then withdraw
   // the whole collateral. Aave's own "repay everything / withdraw
