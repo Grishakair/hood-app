@@ -170,7 +170,7 @@ export default function MonadFlow() {
   const [demoCard, setDemoCard] = useState(null); // { pan, expiry, cvv }
   // Which action panel is open below the card — only "deposit" has a form;
   // withdraw/cashback/invite are single-click actions with no panel.
-  const [activePanel, setActivePanel] = useState("deposit");
+  const [activePanel, setActivePanel] = useState(null);
   const [placeholderNote, setPlaceholderNote] = useState("");
   const [manualRefundAddress, setManualRefundAddress] = useState("");
   const [manualDeposit, setManualDeposit] = useState(null); // { address, amount, symbol }
@@ -815,28 +815,40 @@ export default function MonadFlow() {
                 key: "deposit",
                 icon: "↑",
                 label: "deposit",
-                onClick: () => setActivePanel((v) => (v === "deposit" ? null : "deposit")),
+                onClick: () => {
+                  setPlaceholderNote("");
+                  setActivePanel((v) => (v === "deposit" ? null : "deposit"));
+                },
                 active: activePanel === "deposit",
               },
               {
                 key: "withdraw",
                 icon: withdrawing ? "…" : "↓",
                 label: "withdraw",
-                onClick: handleWithdraw,
+                onClick: () => {
+                  setActivePanel(null);
+                  handleWithdraw();
+                },
                 disabled: !hasSupplied || withdrawing,
               },
               {
                 key: "cashback",
                 icon: "%",
                 label: "cashback",
-                onClick: () => setPlaceholderNote("claiming cashback is coming soon."),
+                onClick: () => {
+                  setActivePanel(null);
+                  setPlaceholderNote("claiming cashback is coming soon.");
+                },
                 disabled: !hasSupplied,
               },
               {
                 key: "invite",
                 icon: "+1",
                 label: "invite",
-                onClick: () => setPlaceholderNote("invite links are coming soon."),
+                onClick: () => {
+                  setActivePanel(null);
+                  setPlaceholderNote("invite links are coming soon.");
+                },
               },
             ].map((b) => (
               <button
