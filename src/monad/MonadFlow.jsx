@@ -718,28 +718,6 @@ export default function MonadFlow() {
               >
                 <EyeIcon open={cardRevealed} />
               </span>
-              <span className="mf-tip-wrap">
-                <span
-                  style={{
-                    border: `1px solid ${paper}`,
-                    borderRadius: "50%",
-                    width: 16,
-                    height: 16,
-                    fontSize: 10,
-                    fontStyle: "italic",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    opacity: 0.85,
-                  }}
-                >
-                  ?
-                </span>
-                <span className="mf-tip" style={{ color: paper }}>
-                  your deposit supplies into Aave on Monad and borrows a cheaper stablecoin against it — that spread
-                  funds the card. the collateral keeps earning the whole time. one shot, no loop.
-                </span>
-              </span>
             </div>
           </div>
 
