@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAccount, useDisconnect } from "wagmi";
-import { getBalance, readContract, writeContract, sendTransaction, waitForTransactionReceipt } from "wagmi/actions";
-import { formatUnits } from "viem";
+import { getBalance, readContract, writeContract, sendTransaction, waitForTransactionReceipt, estimateGas } from "wagmi/actions";
+import { formatUnits, encodeFunctionData } from "viem";
 import { useAppKit } from "@reown/appkit/react";
 import { monad } from "@reown/appkit/networks";
 import { wagmiConfig } from "./appkit.js";
@@ -50,11 +50,21 @@ const isTronAddress = (value) => /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(value || "")
 // eth_estimateGas heuristics expect from an EVM chain, and a wallet that
 // falls back to an inflated default on a borderline estimate can get its
 // own suggested gas rejected by Monad's RPC as "exceeds transaction gas
-// limit" — even though the call itself would succeed fine. Passing a
-// fixed, comfortably-generous limit sidesteps that estimation step
-// entirely for every Pool/ERC20 call this page makes.
-const GAS_APPROVE = 150_000n;
-const GAS_AAVE_CALL = 600_000n;
+// limit" — even though the call itself would succeed fine.
+//
+// Monad's own docs are explicit about the fix: gas fees there are charged
+// on the *declared* gas_limit, not actual usage, so the right move is a
+// tight estimate-plus-buffer (their guidance: ~7.5-10%), never a big flat
+// number — too low reverts out-of-gas, too high both overcharges and can
+// get rejected outright. estimateGasBuffered below does exactly that: a
+// real eth_estimateGas call for this specific call, plus 20% headroom
+// (generous relative to Monad's own 7.5% suggestion, since a demo
+// failing outright is worse than a slightly bigger fee).
+async function estimateGasBuffered({ chainId, to, abi, functionName, args, account }) {
+  const data = encodeFunctionData({ abi, functionName, args });
+  const est = await estimateGas(wagmiConfig, { chainId, to, data, account });
+  return (est * 120n) / 100n;
+}
 
 const FEATURE_CARDS = [
   {
@@ -388,23 +398,25 @@ export default function MonadFlow() {
       }
 
       setDepositPhase("activating your card...");
+      const approveArgs = { chainId: monad.id, to: market.collateralAsset.address, abi: APPROVE_ABI, functionName: "approve", args: [market.poolAddress, supplyAmountBaseUnits], account: address };
       const approveTx = await writeContract(wagmiConfig, {
         chainId: monad.id,
         address: market.collateralAsset.address,
         abi: APPROVE_ABI,
         functionName: "approve",
         args: [market.poolAddress, supplyAmountBaseUnits],
-        gas: GAS_APPROVE,
+        gas: await estimateGasBuffered(approveArgs),
       });
       await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: approveTx });
 
+      const supplyArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "supply", args: [market.collateralAsset.address, supplyAmountBaseUnits, address, 0], account: address };
       const supplyTx = await writeContract(wagmiConfig, {
         chainId: monad.id,
         address: market.poolAddress,
         abi: AAVE_POOL_ABI,
         functionName: "supply",
         args: [market.collateralAsset.address, supplyAmountBaseUnits, address, 0],
-        gas: GAS_AAVE_CALL,
+        gas: await estimateGasBuffered(supplyArgs),
       });
       await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: supplyTx });
       const suppliedFormatted = truncateDecimalString(formatUnits(supplyAmountBaseUnits, market.collateralAsset.decimals), 6);
@@ -426,13 +438,14 @@ export default function MonadFlow() {
       const safeBorrow = (Number(availableBorrowsBase) / 1e8 / market.borrowAsset.usdPrice) * 0.95;
       const borrowAmountBaseUnits = BigInt(toBaseUnits(safeBorrow.toFixed(6), market.borrowAsset.decimals));
 
+      const borrowArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "borrow", args: [market.borrowAsset.address, borrowAmountBaseUnits, 2n, 0, address], account: address };
       const borrowTx = await writeContract(wagmiConfig, {
         chainId: monad.id,
         address: market.poolAddress,
         abi: AAVE_POOL_ABI,
         functionName: "borrow",
         args: [market.borrowAsset.address, borrowAmountBaseUnits, 2n, 0, address],
-        gas: GAS_AAVE_CALL,
+        gas: await estimateGasBuffered(borrowArgs),
       });
       await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: borrowTx });
 
@@ -484,35 +497,38 @@ export default function MonadFlow() {
       // might not even be what an old debt is actually denominated in.
       if (hasDebt) {
         setWithdrawPhase("clearing your balance...");
+        const repayApproveArgs = { chainId: monad.id, to: market.borrowAsset.address, abi: APPROVE_ABI, functionName: "approve", args: [market.poolAddress, MAX_UINT256], account: address };
         const repayApproveTx = await writeContract(wagmiConfig, {
           chainId: monad.id,
           address: market.borrowAsset.address,
           abi: APPROVE_ABI,
           functionName: "approve",
           args: [market.poolAddress, MAX_UINT256],
-          gas: GAS_APPROVE,
+          gas: await estimateGasBuffered(repayApproveArgs),
         });
         await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: repayApproveTx });
 
+        const repayArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "repay", args: [market.borrowAsset.address, MAX_UINT256, 2n, address], account: address };
         const repayTx = await writeContract(wagmiConfig, {
           chainId: monad.id,
           address: market.poolAddress,
           abi: AAVE_POOL_ABI,
           functionName: "repay",
           args: [market.borrowAsset.address, MAX_UINT256, 2n, address],
-          gas: GAS_AAVE_CALL,
+          gas: await estimateGasBuffered(repayArgs),
         });
         await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: repayTx });
       }
 
       setWithdrawPhase("sending it back to your wallet...");
+      const withdrawArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "withdraw", args: [market.collateralAsset.address, MAX_UINT256, address], account: address };
       const withdrawTx = await writeContract(wagmiConfig, {
         chainId: monad.id,
         address: market.poolAddress,
         abi: AAVE_POOL_ABI,
         functionName: "withdraw",
         args: [market.collateralAsset.address, MAX_UINT256, address],
-        gas: GAS_AAVE_CALL,
+        gas: await estimateGasBuffered(withdrawArgs),
       });
       await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: withdrawTx });
 
