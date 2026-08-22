@@ -12,7 +12,7 @@ const AAVE_GRAPHQL_URL = "https://api.v3.aave.com/graphql";
 const STABLE_BORROW_SYMBOLS = ["GHO", "USDT0", "USDT", "AUSD", "USDe", "mUSD", "DAI"];
 
 export async function fetchMonadAaveMarket() {
-  const query = `{ markets(request: { chainIds: [${monad.id}] }) { address chain { chainId } reserves { underlyingToken { symbol address decimals } usdExchangeRate supplyInfo { canBeCollateral maxLTV { value } apy { formatted } } borrowInfo { apy { formatted } borrowingState availableLiquidity { amount { value } } } } } }`;
+  const query = `{ markets(request: { chainIds: [${monad.id}] }) { address chain { chainId } reserves { underlyingToken { symbol address decimals } usdExchangeRate supplyInfo { canBeCollateral maxLTV { value } apy { formatted } } borrowInfo { apy { formatted } borrowingState borrowCapReached availableLiquidity { amount { value } } } } } }`;
 
   const res = await fetch(AAVE_GRAPHQL_URL, {
     method: "POST",
@@ -34,6 +34,14 @@ export async function fetchMonadAaveMarket() {
               r.underlyingToken.symbol !== c.underlyingToken.symbol &&
               STABLE_BORROW_SYMBOLS.includes(r.underlyingToken.symbol) &&
               r.borrowInfo?.borrowingState === "ENABLED" &&
+              // "enabled" + plenty of liquidity still isn't enough — a
+              // reserve can have both and still be maxed out on its own
+              // separate borrowCap, which reverts with BorrowCapExceeded()
+              // on every attempt regardless of the borrower's own limits.
+              // Confirmed live: USDe reads ENABLED with $64M liquidity but
+              // borrowCapReached true, and picking it as "cheapest" made
+              // every borrow on this page fail 100% of the time.
+              r.borrowInfo?.borrowCapReached !== true &&
               Number(r.borrowInfo?.availableLiquidity?.amount?.value) > 0
           )
           .sort((x, y) => Number(x.borrowInfo.apy.formatted) - Number(y.borrowInfo.apy.formatted))[0]

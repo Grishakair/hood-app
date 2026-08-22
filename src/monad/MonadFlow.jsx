@@ -159,7 +159,6 @@ export default function MonadFlow() {
   const [amount, setAmount] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [cardRevealed, setCardRevealed] = useState(false);
-  const [tab, setTab] = useState("deposit"); // deposit | withdraw | yield
   const [manualRefundAddress, setManualRefundAddress] = useState("");
   const [manualDeposit, setManualDeposit] = useState(null); // { address, amount, symbol }
 
@@ -327,6 +326,14 @@ export default function MonadFlow() {
     setDepositError("");
     setDepositStatus("running");
     try {
+      // Refetch rather than trust the market snapshot from page load —
+      // which stablecoin is cheapest to borrow, whether it's still enabled,
+      // and how much liquidity it has can all drift in the time between
+      // loading the page and actually clicking deposit. Shadows the outer
+      // `market` for the rest of this function.
+      const market = await fetchMonadAaveMarket();
+      setMarket(market);
+
       let supplyAmountBaseUnits;
       const originNetwork = pickedToken.network;
       const originChainId = CHAIN_ID_BY_NETWORK[originNetwork];
@@ -420,7 +427,7 @@ export default function MonadFlow() {
         supplyAmountBaseUnits = BigInt(toBaseUnits(amount, market.collateralAsset.decimals));
       }
 
-      setDepositPhase("activating your card...");
+      setDepositPhase("approving...");
       const approveArgs = { chainId: monad.id, to: market.collateralAsset.address, abi: APPROVE_ABI, functionName: "approve", args: [market.poolAddress, supplyAmountBaseUnits], account: address };
       const approveTx = await writeContract(wagmiConfig, {
         chainId: monad.id,
@@ -432,6 +439,7 @@ export default function MonadFlow() {
       });
       await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: approveTx });
 
+      setDepositPhase("activating your card...");
       const supplyArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "supply", args: [market.collateralAsset.address, supplyAmountBaseUnits, address, 0], account: address };
       const supplyTx = await writeContract(wagmiConfig, {
         chainId: monad.id,
@@ -451,6 +459,7 @@ export default function MonadFlow() {
       // position borrows against the true total, not just what just got
       // supplied. 95% of that (not Aave's raw max) keeps a sliver of
       // headroom below the liquidation threshold.
+      setDepositPhase("checking borrow limit...");
       const [, , availableBorrowsBase] = await readContract(wagmiConfig, {
         chainId: monad.id,
         address: market.poolAddress,
@@ -461,28 +470,39 @@ export default function MonadFlow() {
       const safeBorrow = (Number(availableBorrowsBase) / 1e8 / market.borrowAsset.usdPrice) * 0.95;
       const borrowAmountBaseUnits = BigInt(toBaseUnits(safeBorrow.toFixed(6), market.borrowAsset.decimals));
 
-      const borrowArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "borrow", args: [market.borrowAsset.address, borrowAmountBaseUnits, 2n, 0, address], account: address };
-      const borrowTx = await writeContract(wagmiConfig, {
-        chainId: monad.id,
-        address: market.poolAddress,
-        abi: AAVE_POOL_ABI,
-        functionName: "borrow",
-        args: [market.borrowAsset.address, borrowAmountBaseUnits, 2n, 0, address],
-        gas: await estimateGasBuffered(borrowArgs),
-      });
-      await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: borrowTx });
+      // Nothing meaningful to borrow yet (e.g. this deposit alone doesn't
+      // clear the reserve's minimum, or the account has no borrow room for
+      // some other reason) — land safely on "supplied, one step left"
+      // instead of sending a doomed near-zero borrow call.
+      if (borrowAmountBaseUnits > 0n) {
+        setDepositPhase("borrowing...");
+        const borrowArgs = { chainId: monad.id, to: market.poolAddress, abi: AAVE_POOL_ABI, functionName: "borrow", args: [market.borrowAsset.address, borrowAmountBaseUnits, 2n, 0, address], account: address };
+        const borrowTx = await writeContract(wagmiConfig, {
+          chainId: monad.id,
+          address: market.poolAddress,
+          abi: AAVE_POOL_ABI,
+          functionName: "borrow",
+          args: [market.borrowAsset.address, borrowAmountBaseUnits, 2n, 0, address],
+          gas: await estimateGasBuffered(borrowArgs),
+        });
+        await waitForTransactionReceipt(wagmiConfig, { chainId: monad.id, hash: borrowTx });
+        setLastTx({ hash: borrowTx, chainId: monad.id });
+      }
 
       setPosition({
         suppliedFormatted,
         borrowedFormatted: truncateDecimalString(formatUnits(borrowAmountBaseUnits, market.borrowAsset.decimals), 6),
       });
-      setLastTx({ hash: borrowTx, chainId: monad.id });
       setDepositStatus("idle");
       setDepositPhase("");
     } catch (err) {
       setManualDeposit(null);
       setDepositStatus("error");
-      setDepositError(friendlyTxError(err, "deposit failed"));
+      // Tag which step actually failed (the phase label at the moment of
+      // the throw) — "unknown reason" from a bare contract revert is a lot
+      // more actionable as "unknown reason (during: borrowing...)".
+      const stepTag = depositPhase ? ` (during: ${depositPhase})` : "";
+      setDepositError(friendlyTxError(err, "deposit failed") + stepTag);
     }
   }
 
@@ -682,35 +702,8 @@ export default function MonadFlow() {
         )}
 
         {isConnected && (
-          <>
-            <div style={{ display: "flex", border: `1px solid ${ink}`, marginBottom: -1 }}>
-              {[
-                { key: "deposit", label: "deposit" },
-                { key: "withdraw", label: "withdraw" },
-                { key: "yield", label: "yield more" },
-              ].map(({ key, label }, i) => (
-                <div
-                  key={key}
-                  onClick={() => setTab(key)}
-                  className="mf-tab"
-                  style={{
-                    flex: 1,
-                    textAlign: "center",
-                    padding: "10px 0",
-                    fontSize: 12,
-                    cursor: "pointer",
-                    borderRight: i < 2 ? `1px solid ${ink}` : "none",
-                    background: tab === key ? ink : "transparent",
-                    color: tab === key ? paper : ink,
-                  }}
-                >
-                  {label}
-                </div>
-              ))}
-            </div>
-
-            <div style={{ border: `1px solid ${ink}`, borderTop: "none", background: paper, padding: 16 }}>
-          {tab === "deposit" && (
+          <div style={{ border: `1px solid ${ink}`, background: paper, padding: 16 }}>
+          {true && (
             <>
               <div style={{ fontSize: 11, color: gray, fontWeight: 600, marginBottom: 6 }}>deposit — choose a token</div>
               <div
@@ -867,81 +860,49 @@ export default function MonadFlow() {
             </>
           )}
 
-          {tab === "withdraw" && (
+          {hasSupplied && (
             <>
-              {hasSupplied ? (
-                <>
-                  <div style={{ fontSize: 12, lineHeight: 1.8, marginBottom: 14 }}>
-                    <div>
-                      deposit <strong>~${depositDisplay.toFixed(2)}</strong>
-                    </div>
-                    {!hasDebt && (
-                      <div style={{ color: gray, fontSize: 11 }}>
-                        one step left — use the deposit tab (any small amount) to activate it.
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    className="mf-cta"
-                    onClick={handleWithdraw}
-                    disabled={withdrawing}
-                    style={{
-                      width: "100%",
-                      padding: "11px 0",
-                      border: `1px solid ${ink}`,
-                      background: "transparent",
-                      color: ink,
-                      fontFamily: "inherit",
-                      fontSize: 13,
-                      letterSpacing: 1,
-                      cursor: "pointer",
-                      opacity: withdrawing ? 0.7 : 1,
-                    }}
-                  >
-                    {withdrawing ? withdrawPhase || "working..." : "withdraw to wallet"}
-                  </button>
-                  {withdrawStatus === "error" && withdrawError && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>{withdrawError}</div>}
-                </>
-              ) : (
-                <div style={{ fontSize: 12, color: gray }}>nothing deposited yet — use the deposit tab first.</div>
-              )}
+              <div style={{ borderTop: `1px solid ${line}`, marginTop: 14, paddingTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 12 }}>
+                  deposit <strong>~${depositDisplay.toFixed(2)}</strong>
+                </div>
+                <button
+                  className="mf-cta"
+                  onClick={handleWithdraw}
+                  disabled={withdrawing}
+                  title="withdraw to wallet"
+                  style={{
+                    width: 34,
+                    height: 34,
+                    flexShrink: 0,
+                    border: `1px solid ${ink}`,
+                    background: "transparent",
+                    color: ink,
+                    fontFamily: "inherit",
+                    fontSize: 16,
+                    cursor: "pointer",
+                    opacity: withdrawing ? 0.6 : 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {withdrawing ? "…" : "↓"}
+                </button>
+              </div>
+              {withdrawStatus === "error" && withdrawError && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>{withdrawError}</div>}
             </>
           )}
 
-          {tab === "yield" && (
-            <div style={{ fontSize: 12, lineHeight: 1.8 }}>
-              {marketStatus === "ready" && market ? (
-                <>
-                  <div>
-                    supply APY <strong>{market.supplyApy.toFixed(2)}%</strong> · borrow APY{" "}
-                    <strong>{market.borrowApy.toFixed(2)}%</strong>
-                  </div>
-                  <div style={{ color: gray, fontSize: 11, marginTop: 4 }}>
-                    the {(market.supplyApy - market.borrowApy).toFixed(2)}% spread between them is what funds your
-                    card balance — it's live from Aave's own market on Monad and moves with real supply/demand, not
-                    fixed by this app.
-                  </div>
-                  <div style={{ color: gray, fontSize: 11, marginTop: 10 }}>
-                    yield accrues automatically on whatever's supplied — no action needed. depositing more increases
-                    both the collateral earning yield and how much the card can spend.
-                  </div>
-                </>
-              ) : (
-                <div style={{ color: gray }}>checking live rates...</div>
-              )}
+          {lastTx && (
+            <div style={{ fontSize: 11, color: gray, marginTop: 10 }}>
+              last tx:{" "}
+              <a href={`${EXPLORER_BY_CHAIN[lastTx.chainId]}/tx/${lastTx.hash}`} target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
+                {lastTx.hash.slice(0, 10)}…
+              </a>
             </div>
           )}
-
-              {lastTx && (
-                <div style={{ fontSize: 11, color: gray, marginTop: 10 }}>
-                  last tx:{" "}
-                  <a href={`${EXPLORER_BY_CHAIN[lastTx.chainId]}/tx/${lastTx.hash}`} target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
-                    {lastTx.hash.slice(0, 10)}…
-                  </a>
-                </div>
-              )}
-            </div>
-          </>
+          </div>
         )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 24 }}>
