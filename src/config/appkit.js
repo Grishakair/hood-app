@@ -1,10 +1,10 @@
 import { createAppKit } from "@reown/appkit/react";
 import { WagmiAdapter } from "@reown/appkit-adapter-wagmi";
-import { mainnet, base, optimism, polygon, bsc, monad } from "@reown/appkit/networks";
+import { mainnet, base, optimism, polygon, bsc, arbitrum, monad } from "@reown/appkit/networks";
 
 export const projectId = "a00f9a871b60104aeee70aeaf6d935a6";
 
-export const networks = [mainnet, base, optimism, polygon, bsc, monad];
+export const networks = [mainnet, base, optimism, polygon, bsc, arbitrum, monad];
 
 export const wagmiAdapter = new WagmiAdapter({
   networks,

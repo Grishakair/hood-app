@@ -4,9 +4,12 @@ import { getBalance, readContract, writeContract, sendTransaction, waitForTransa
 import { formatUnits, encodeFunctionData } from "viem";
 import { useAppKit } from "@reown/appkit/react";
 import { monad } from "@reown/appkit/networks";
-import { wagmiConfig } from "./appkit.js";
-import { CHAIN_ID_BY_NETWORK, NATIVE_SYMBOL_BY_CHAIN, EXPLORER_BY_CHAIN, ensureChain } from "./chains.js";
+import { wagmiConfig } from "../config/appkit.js";
 import {
+  CHAIN_ID_BY_NETWORK,
+  NATIVE_SYMBOL_BY_CHAIN,
+  EXPLORER_BY_CHAIN,
+  ensureChain,
   toBaseUnits,
   truncateDecimalString,
   findTokenRecord,
@@ -125,6 +128,24 @@ function HoodMark({ size = 22, c = ink, bg = paper }) {
   );
 }
 
+// Purely a visual affordance for now — no real card number behind it yet
+// (that's the sandbox card-issuance API, wired up separately later). Toggles
+// between the masked placeholder and a demo number so the design reads
+// right before the real data exists.
+function EyeIcon({ open, size = 16, c = paper }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+      <path
+        d="M2 12C2 12 5.5 5.5 12 5.5C18.5 5.5 22 12 22 12C22 12 18.5 18.5 12 18.5C5.5 18.5 2 12 2 12Z"
+        stroke={c}
+        strokeWidth="1.6"
+      />
+      <circle cx="12" cy="12" r="3.2" stroke={c} strokeWidth="1.6" />
+      {!open && <line x1="3.5" y1="20.5" x2="20.5" y2="3.5" stroke={c} strokeWidth="1.6" />}
+    </svg>
+  );
+}
+
 export default function MonadFlow() {
   const { open } = useAppKit();
   const { address, isConnected } = useAccount();
@@ -137,6 +158,8 @@ export default function MonadFlow() {
   const [pickedToken, setPickedToken] = useState(null);
   const [amount, setAmount] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [cardRevealed, setCardRevealed] = useState(false);
+  const [tab, setTab] = useState("deposit"); // deposit | withdraw | yield
   const [manualRefundAddress, setManualRefundAddress] = useState("");
   const [manualDeposit, setManualDeposit] = useState(null); // { address, amount, symbol }
 
@@ -588,33 +611,49 @@ export default function MonadFlow() {
               <HoodMark size={22} c={paper} bg={ink} />
               <div style={{ fontSize: 12, letterSpacing: 1 }}>my hood card</div>
             </div>
-            <span className="mf-tip-wrap">
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span
-                style={{
-                  border: `1px solid ${paper}`,
-                  borderRadius: "50%",
-                  width: 16,
-                  height: 16,
-                  fontSize: 10,
-                  fontStyle: "italic",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  opacity: 0.85,
-                }}
+                onClick={() => setCardRevealed((v) => !v)}
+                style={{ cursor: "pointer", opacity: 0.85, display: "flex" }}
+                title={cardRevealed ? "hide card number" : "reveal card number"}
               >
-                ?
+                <EyeIcon open={cardRevealed} />
               </span>
-              <span className="mf-tip" style={{ color: paper }}>
-                your deposit supplies into Aave on Monad and borrows a cheaper stablecoin against it — that spread
-                funds the card. the collateral keeps earning the whole time. one shot, no loop.
+              <span className="mf-tip-wrap">
+                <span
+                  style={{
+                    border: `1px solid ${paper}`,
+                    borderRadius: "50%",
+                    width: 16,
+                    height: 16,
+                    fontSize: 10,
+                    fontStyle: "italic",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: 0.85,
+                  }}
+                >
+                  ?
+                </span>
+                <span className="mf-tip" style={{ color: paper }}>
+                  your deposit supplies into Aave on Monad and borrows a cheaper stablecoin against it — that spread
+                  funds the card. the collateral keeps earning the whole time. one shot, no loop.
+                </span>
               </span>
-            </span>
+            </div>
           </div>
+
+          <div style={{ marginTop: 22, fontSize: 20, letterSpacing: 2 }}>
+            {cardRevealed ? "4242  4242  4242  4242" : "••••  ••••  ••••  ••••"}
+          </div>
+          {cardRevealed && (
+            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>demo number — sandbox card issuance connects here next</div>
+          )}
 
           {hasSupplied ? (
             <>
-              <div style={{ marginTop: 24, fontSize: 26, letterSpacing: 1 }}>
+              <div style={{ marginTop: 16, fontSize: 26, letterSpacing: 1 }}>
                 ${depositDisplay.toFixed(2)}
               </div>
               <div style={{ fontSize: 11, opacity: 0.7, marginTop: 2 }}>available to spend</div>
@@ -625,8 +664,7 @@ export default function MonadFlow() {
             </>
           ) : (
             <>
-              <div style={{ marginTop: 24, fontSize: 22, letterSpacing: 2, opacity: 0.5 }}>•••• •••• •••• ••••</div>
-              <div style={{ fontSize: 11, opacity: 0.6, marginTop: 8 }}>
+              <div style={{ fontSize: 11, opacity: 0.6, marginTop: 16 }}>
                 {!isConnected ? "connect a wallet to activate" : "deposit to activate your card"}
               </div>
             </>
@@ -637,18 +675,42 @@ export default function MonadFlow() {
         </div>
 
         {/* controls */}
-        <div style={{ border: `1px solid ${ink}`, background: paper, padding: 16 }}>
-          {!isConnected && (
-            <button
-              className="mf-cta"
-              onClick={() => open()}
-              style={{ width: "100%", padding: "11px 0", border: `1px solid ${ink}`, background: "transparent", color: ink, fontFamily: "inherit", fontSize: 13, letterSpacing: 1, cursor: "pointer" }}
-            >
-              connect wallet
-            </button>
-          )}
+        {!isConnected && (
+          <div style={{ border: `1px solid ${ink}`, background: paper, padding: 16, textAlign: "center", fontSize: 12, color: gray }}>
+            connect your wallet above to deposit
+          </div>
+        )}
 
-          {isConnected && (
+        {isConnected && (
+          <>
+            <div style={{ display: "flex", border: `1px solid ${ink}`, marginBottom: -1 }}>
+              {[
+                { key: "deposit", label: "deposit" },
+                { key: "withdraw", label: "withdraw" },
+                { key: "yield", label: "yield more" },
+              ].map(({ key, label }, i) => (
+                <div
+                  key={key}
+                  onClick={() => setTab(key)}
+                  className="mf-tab"
+                  style={{
+                    flex: 1,
+                    textAlign: "center",
+                    padding: "10px 0",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    borderRight: i < 2 ? `1px solid ${ink}` : "none",
+                    background: tab === key ? ink : "transparent",
+                    color: tab === key ? paper : ink,
+                  }}
+                >
+                  {label}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ border: `1px solid ${ink}`, borderTop: "none", background: paper, padding: 16 }}>
+          {tab === "deposit" && (
             <>
               <div style={{ fontSize: 11, color: gray, fontWeight: 600, marginBottom: 6 }}>deposit — choose a token</div>
               <div
@@ -805,50 +867,82 @@ export default function MonadFlow() {
             </>
           )}
 
-          {isConnected && hasSupplied && (
+          {tab === "withdraw" && (
             <>
-              <div style={{ fontSize: 12, lineHeight: 1.8, marginBottom: 14 }}>
-                <div>
-                  deposit <strong>~${depositDisplay.toFixed(2)}</strong>
-                </div>
-                {!hasDebt && (
-                  <div style={{ color: gray, fontSize: 11 }}>
-                    one step left — deposit again above (any small amount) to activate it.
+              {hasSupplied ? (
+                <>
+                  <div style={{ fontSize: 12, lineHeight: 1.8, marginBottom: 14 }}>
+                    <div>
+                      deposit <strong>~${depositDisplay.toFixed(2)}</strong>
+                    </div>
+                    {!hasDebt && (
+                      <div style={{ color: gray, fontSize: 11 }}>
+                        one step left — use the deposit tab (any small amount) to activate it.
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-              <button
-                className="mf-cta"
-                onClick={handleWithdraw}
-                disabled={withdrawing}
-                style={{
-                  width: "100%",
-                  padding: "11px 0",
-                  border: `1px solid ${ink}`,
-                  background: "transparent",
-                  color: ink,
-                  fontFamily: "inherit",
-                  fontSize: 13,
-                  letterSpacing: 1,
-                  cursor: "pointer",
-                  opacity: withdrawing ? 0.7 : 1,
-                }}
-              >
-                {withdrawing ? withdrawPhase || "working..." : "withdraw to wallet"}
-              </button>
-              {withdrawStatus === "error" && withdrawError && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>{withdrawError}</div>}
+                  <button
+                    className="mf-cta"
+                    onClick={handleWithdraw}
+                    disabled={withdrawing}
+                    style={{
+                      width: "100%",
+                      padding: "11px 0",
+                      border: `1px solid ${ink}`,
+                      background: "transparent",
+                      color: ink,
+                      fontFamily: "inherit",
+                      fontSize: 13,
+                      letterSpacing: 1,
+                      cursor: "pointer",
+                      opacity: withdrawing ? 0.7 : 1,
+                    }}
+                  >
+                    {withdrawing ? withdrawPhase || "working..." : "withdraw to wallet"}
+                  </button>
+                  {withdrawStatus === "error" && withdrawError && <div style={{ fontSize: 11, color: "#B3261E", marginTop: 8 }}>{withdrawError}</div>}
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: gray }}>nothing deposited yet — use the deposit tab first.</div>
+              )}
             </>
           )}
 
-          {lastTx && (
-            <div style={{ fontSize: 11, color: gray, marginTop: 10 }}>
-              last tx:{" "}
-              <a href={`${EXPLORER_BY_CHAIN[lastTx.chainId]}/tx/${lastTx.hash}`} target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
-                {lastTx.hash.slice(0, 10)}…
-              </a>
+          {tab === "yield" && (
+            <div style={{ fontSize: 12, lineHeight: 1.8 }}>
+              {marketStatus === "ready" && market ? (
+                <>
+                  <div>
+                    supply APY <strong>{market.supplyApy.toFixed(2)}%</strong> · borrow APY{" "}
+                    <strong>{market.borrowApy.toFixed(2)}%</strong>
+                  </div>
+                  <div style={{ color: gray, fontSize: 11, marginTop: 4 }}>
+                    the {(market.supplyApy - market.borrowApy).toFixed(2)}% spread between them is what funds your
+                    card balance — it's live from Aave's own market on Monad and moves with real supply/demand, not
+                    fixed by this app.
+                  </div>
+                  <div style={{ color: gray, fontSize: 11, marginTop: 10 }}>
+                    yield accrues automatically on whatever's supplied — no action needed. depositing more increases
+                    both the collateral earning yield and how much the card can spend.
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: gray }}>checking live rates...</div>
+              )}
             </div>
           )}
-        </div>
+
+              {lastTx && (
+                <div style={{ fontSize: 11, color: gray, marginTop: 10 }}>
+                  last tx:{" "}
+                  <a href={`${EXPLORER_BY_CHAIN[lastTx.chainId]}/tx/${lastTx.hash}`} target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
+                    {lastTx.hash.slice(0, 10)}…
+                  </a>
+                </div>
+              )}
+            </div>
+          </>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 24 }}>
           {FEATURE_CARDS.map((f) => (

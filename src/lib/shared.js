@@ -5,7 +5,7 @@
 // Borrow's top-level consts reading App's exports before they're
 // initialized).
 import { getAccount, switchChain } from "wagmi/actions";
-import { mainnet, base, optimism, polygon, bsc, monad } from "@reown/appkit/networks";
+import { mainnet, base, optimism, polygon, bsc, arbitrum, monad } from "@reown/appkit/networks";
 import { wagmiConfig } from "../config/appkit.js";
 
 export const EXPLORER_BY_CHAIN = {
@@ -14,6 +14,7 @@ export const EXPLORER_BY_CHAIN = {
   [optimism.id]: "https://optimistic.etherscan.io",
   [polygon.id]: "https://polygonscan.com",
   [bsc.id]: "https://bscscan.com",
+  [arbitrum.id]: "https://arbiscan.io",
   [monad.id]: "https://monadscan.com",
 };
 
@@ -30,6 +31,8 @@ export const CHAIN_ID_BY_NETWORK = {
   pol: polygon.id,
   bsc: bsc.id,
   bnb: bsc.id,
+  arbitrum: arbitrum.id,
+  arb: arbitrum.id,
   monad: monad.id,
 };
 
@@ -39,6 +42,7 @@ export const NATIVE_SYMBOL_BY_CHAIN = {
   [optimism.id]: "ETH",
   [polygon.id]: "POL",
   [bsc.id]: "BNB",
+  [arbitrum.id]: "ETH",
   [monad.id]: "MON",
 };
 
@@ -48,6 +52,7 @@ export const CHAIN_NAME_BY_ID = {
   [optimism.id]: "Optimism",
   [polygon.id]: "Polygon",
   [bsc.id]: "BNB Chain",
+  [arbitrum.id]: "Arbitrum",
   [monad.id]: "Monad",
 };
 
