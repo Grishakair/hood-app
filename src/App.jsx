@@ -60,7 +60,10 @@ const NETWORK_CHIPS = ["all", "ethereum", "base", "optimism", "polygon", "monad"
 // Monad is featured too — Aurora Intents lists it as a live destination
 // (MON/USDC/USDT0 all have real assetIds) and Aave v3 runs there for real,
 // which is what the Card/Earn flow supplies and borrows against.
-const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "pol", "monad"];
+// Zcash (zec) is featured too — unlike Tron, real (non-dry) quotes actually
+// complete in both directions (verified live: USDC->ZEC and ZEC->USDC both
+// return a real deposit address), so there's no reason to demote it.
+const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "pol", "monad", "zec"];
 
 // Sort order for the buy/receive token list — the 1click API returns NEAR
 // tokens first just because of how it's indexed, not because they're most
@@ -1421,8 +1424,11 @@ export default function App() {
         <div className="hood-header-nav" style={{ display: "flex", gap: 20, fontSize: 13 }}>
           {[
             { key: "app", label: "Swap" },
-            { key: "borrow", label: "Borrow" },
-            { key: "card", label: "Card" },
+            // Borrow and Card pulled from prod nav for now — panels/routes
+            // still work if topTab is set directly, just not reachable from
+            // the header while this is commented out.
+            // { key: "borrow", label: "Borrow" },
+            // { key: "card", label: "Card" },
             { key: "how", label: "How it work?" },
             { key: "club", label: "Hood club" },
           ].map(({ key, label }) => (
