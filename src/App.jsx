@@ -57,13 +57,13 @@ const NETWORK_CHIPS = ["all", "ethereum", "base", "optimism", "polygon", "monad"
 // actual deposit-address generation is broken) — not something we can fix
 // on our end, so it stays demoted under "more" until that's resolved,
 // rather than featuring a route that can't currently complete.
-// Monad is featured too — Aurora Intents lists it as a live destination
-// (MON/USDC/USDT0 all have real assetIds) and Aave v3 runs there for real,
-// which is what the Card/Earn flow supplies and borrows against.
+// Monad was featured here too while Card/Earn (the Aave supply+borrow flow)
+// was linked from the header — with that pulled from the nav for now, Monad
+// is demoted under "more" in its place.
 // Zcash (zec) is featured too — unlike Tron, real (non-dry) quotes actually
 // complete in both directions (verified live: USDC->ZEC and ZEC->USDC both
 // return a real deposit address), so there's no reason to demote it.
-const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "pol", "monad", "zec"];
+const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "pol", "zec"];
 
 // Sort order for the buy/receive token list — the 1click API returns NEAR
 // tokens first just because of how it's indexed, not because they're most
@@ -609,6 +609,11 @@ export default function App() {
   const [tokenSearch, setTokenSearch] = useState("");
   const [networkFilter, setNetworkFilter] = useState("all");
   const [chainsExpanded, setChainsExpanded] = useState(false);
+  // The chain-filter chips default collapsed — expanded, they were eating
+  // into the scrollable token list below in the same fixed-height modal,
+  // especially once "more" was open too. One tap reveals them, and picking
+  // a chip collapses the row straight back so the list gets its space back.
+  const [chainsOpen, setChainsOpen] = useState(false);
   const [liveTokens, setLiveTokens] = useState(null);
   const [liveTokensStatus, setLiveTokensStatus] = useState("loading"); // loading | live | offline
   const [ownedBalances, setOwnedBalances] = useState({}); // "SYMBOL|network" -> bigint
@@ -2235,7 +2240,10 @@ export default function App() {
               const chip = (n) => (
                 <span
                   key={n}
-                  onClick={() => setNetworkFilter(n)}
+                  onClick={() => {
+                    setNetworkFilter(n);
+                    setChainsOpen(false);
+                  }}
                   style={{
                     fontSize: 11,
                     padding: "4px 8px",
@@ -2252,24 +2260,34 @@ export default function App() {
 
               return (
                 <div style={{ flexShrink: 0, padding: "0 16px 12px", marginBottom: 4, borderBottom: `1px solid ${line}` }}>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {mainChips.map(chip)}
-                    <span
-                      onClick={() => setChainsExpanded((v) => !v)}
-                      style={{
-                        fontSize: 11,
-                        padding: "4px 8px",
-                        border: `1px solid ${line}`,
-                        color: gray,
-                        cursor: "pointer",
-                        flexShrink: 0,
-                      }}
-                    >
-                      {chainsExpanded ? "less ▲" : "more ▾"}
-                    </span>
-                  </div>
-                  {chainsExpanded && (
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>{restChips.map(chip)}</div>
+                  <span
+                    onClick={() => setChainsOpen((v) => !v)}
+                    style={{ fontSize: 11, color: gray, cursor: "pointer" }}
+                  >
+                    network: {networkFilter} {chainsOpen ? "▲" : "▼"}
+                  </span>
+                  {chainsOpen && (
+                    <>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                        {mainChips.map(chip)}
+                        <span
+                          onClick={() => setChainsExpanded((v) => !v)}
+                          style={{
+                            fontSize: 11,
+                            padding: "4px 8px",
+                            border: `1px solid ${line}`,
+                            color: gray,
+                            cursor: "pointer",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {chainsExpanded ? "less ▲" : "more ▾"}
+                        </span>
+                      </div>
+                      {chainsExpanded && (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>{restChips.map(chip)}</div>
+                      )}
+                    </>
                   )}
                 </div>
               );
