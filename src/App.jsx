@@ -57,13 +57,13 @@ const NETWORK_CHIPS = ["all", "ethereum", "base", "optimism", "polygon", "monad"
 // actual deposit-address generation is broken) — not something we can fix
 // on our end, so it stays demoted under "more" until that's resolved,
 // rather than featuring a route that can't currently complete.
-// Monad was featured here too while Card/Earn (the Aave supply+borrow flow)
-// was linked from the header — with that pulled from the nav for now, Monad
-// is demoted under "more" in its place.
+// Monad is featured too — Aurora Intents lists it as a live destination
+// (MON/USDC/USDT0 all have real assetIds) and Aave v3 runs there for real,
+// which is what the Card/Earn flow supplies and borrows against.
 // Zcash (zec) is featured too — unlike Tron, real (non-dry) quotes actually
 // complete in both directions (verified live: USDC->ZEC and ZEC->USDC both
 // return a real deposit address), so there's no reason to demote it.
-const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "pol", "zec"];
+const SUPPORTED_NETWORK_CODES = ["eth", "base", "bsc", "pol", "monad", "zec"];
 
 // Sort order for the buy/receive token list — the 1click API returns NEAR
 // tokens first just because of how it's indexed, not because they're most
@@ -1429,11 +1429,8 @@ export default function App() {
         <div className="hood-header-nav" style={{ display: "flex", gap: 20, fontSize: 13 }}>
           {[
             { key: "app", label: "Swap" },
-            // Borrow and Card pulled from prod nav for now — panels/routes
-            // still work if topTab is set directly, just not reachable from
-            // the header while this is commented out.
-            // { key: "borrow", label: "Borrow" },
-            // { key: "card", label: "Card" },
+            { key: "borrow", label: "Borrow" },
+            { key: "card", label: "Card" },
             { key: "how", label: "How it work?" },
             { key: "club", label: "Hood club" },
           ].map(({ key, label }) => (
