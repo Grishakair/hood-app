@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "server": "node server/duelServer.js"
   },
   "dependencies": {
     "@reown/appkit": "^1.8.22",
@@ -16,7 +17,8 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "viem": "^2.55.1",
-    "wagmi": "^3.7.1"
+    "wagmi": "^3.7.1",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",

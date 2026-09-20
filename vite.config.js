@@ -16,6 +16,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         monad: resolve(__dirname, 'monad.html'),
+        duel: resolve(__dirname, 'duel.html'),
       },
     },
   },

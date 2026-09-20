@@ -14,6 +14,7 @@ import { mainnet, base, optimism, polygon, bsc, monad } from "@reown/appkit/netw
 import { wagmiConfig } from "./config/appkit.js";
 import BorrowPanel from "./Borrow.jsx";
 import CardPanel from "./Card.jsx";
+import Duel from "./Duel.jsx";
 import {
   EXPLORER_BY_CHAIN,
   CHAIN_ID_BY_NETWORK,
@@ -49,6 +50,11 @@ const TOKEN_LIST = [
 ];
 
 const NETWORK_CHIPS = ["all", "ethereum", "base", "optimism", "polygon", "monad", "near", "bitcoin"];
+
+// Client-side-only gate for the not-yet-announced Game tab in prod — this is
+// obscurity, not security (the password is trivially visible in the bundle),
+// just enough to keep it from being stumbled on while we're testing.
+const GAME_PASSWORD = "5858";
 
 // Shown first in the network filter chips — our highest-priority chains.
 // Tron was tried here too, but real (non-dry) quotes for it fail 100% of
@@ -535,7 +541,12 @@ export default function App() {
   const { address, isConnected } = useAccount();
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
 
-  const [topTab, setTopTab] = useState("app"); // app | how | club
+  const [topTab, setTopTab] = useState("app"); // app | how | club | game
+  const [gameUnlocked, setGameUnlocked] = useState(
+    () => typeof window !== "undefined" && sessionStorage.getItem("hood_game_unlocked") === "1"
+  );
+  const [gamePasswordInput, setGamePasswordInput] = useState("");
+  const [gamePasswordError, setGamePasswordError] = useState(false);
   const [howLevel, setHowLevel] = useState(1);
   const [mode, setMode] = useState("swap");
   const [priv, setPriv] = useState(false);
@@ -1431,6 +1442,7 @@ export default function App() {
             { key: "app", label: "Swap" },
             { key: "borrow", label: "Borrow" },
             { key: "card", label: "Card" },
+            { key: "game", label: "Game" },
             { key: "how", label: "How it work?" },
             { key: "club", label: "Hood club" },
           ].map(({ key, label }) => (
@@ -1525,6 +1537,47 @@ export default function App() {
 
       {topTab === "card" && (
         <CardPanel ink={ink} gray={gray} line={line} paper={paper} isConnected={isConnected} address={address} open={open} />
+      )}
+
+      {topTab === "game" && (
+        gameUnlocked ? (
+          <Duel />
+        ) : (
+          <div style={{ maxWidth: 320, margin: "60px auto", textAlign: "center" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: ink }}>this tab is locked</div>
+            <input
+              type="password"
+              value={gamePasswordInput}
+              onChange={(e) => {
+                setGamePasswordInput(e.target.value);
+                setGamePasswordError(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                if (e.target.value === GAME_PASSWORD) {
+                  sessionStorage.setItem("hood_game_unlocked", "1");
+                  setGameUnlocked(true);
+                } else {
+                  setGamePasswordError(true);
+                }
+              }}
+              placeholder="password"
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                border: `1px solid ${gamePasswordError ? "#ff5c5c" : ink}`,
+                background: paper,
+                color: ink,
+                fontFamily: "inherit",
+                fontSize: 13,
+                textAlign: "center",
+              }}
+            />
+            {gamePasswordError && (
+              <div style={{ color: "#ff5c5c", fontSize: 12, marginTop: 8 }}>wrong password</div>
+            )}
+          </div>
+        )
       )}
 
       {topTab === "app" && (
