@@ -9,11 +9,27 @@ import { useAppKit } from "@reown/appkit/react";
 // living as a visually separate dark-mode page.
 // Temporary public tunnel (SSH reverse tunnel via localhost.run) to the dev
 // machine's matchmaking server so this works from the deployed prod site too
-// — it dies whenever that tunnel process stops. Set VITE_DUEL_WS_URL to
-// override once there's a real always-on host for server/duelServer.js.
-// (localtunnel was tried first but shows a browser interstitial page that
-// silently breaks the WebSocket handshake — this one doesn't.)
-const WS_URL = import.meta.env.VITE_DUEL_WS_URL || "wss://0eed4adead8374.lhr.life";
+// — it dies whenever that tunnel process stops, and localhost.run hands out
+// a brand new random hostname on every restart. Rather than redeploy the
+// whole site each time that happens, the actual URL lives in a tiny file in
+// the repo (fetched fresh on every connection attempt) so restarting the
+// tunnel only needs a one-line commit, not a rebuild. Set VITE_DUEL_WS_URL
+// to override once there's a real always-on host for server/duelServer.js.
+const WS_URL_FALLBACK = import.meta.env.VITE_DUEL_WS_URL || "wss://1a583ea2ea8f9c.lhr.life";
+const WS_URL_LOOKUP = "https://raw.githubusercontent.com/Grishakair/hood-app/main/public/duel-ws-url.txt";
+
+async function resolveWsUrl() {
+  try {
+    const res = await fetch(`${WS_URL_LOOKUP}?t=${Date.now()}`, { cache: "no-store" });
+    if (res.ok) {
+      const text = (await res.text()).trim();
+      if (text.startsWith("ws://") || text.startsWith("wss://")) return text;
+    }
+  } catch {
+    // network hiccup or lookup file missing — fall back below
+  }
+  return WS_URL_FALLBACK;
+}
 const ENTRY_AMOUNTS = [10, 25, 50, 75];
 const MAX_PICKS = 4;
 const ASSETS = [
@@ -159,8 +175,10 @@ export default function Duel() {
 
     let cancelled = false;
 
-    function connect() {
-      const ws = new WebSocket(WS_URL);
+    async function connect() {
+      const url = await resolveWsUrl();
+      if (cancelled) return;
+      const ws = new WebSocket(url);
       wsRef.current = ws;
 
       ws.onopen = () => {
