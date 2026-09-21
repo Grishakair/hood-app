@@ -306,13 +306,18 @@ function duelStartedPayload(lobby) {
 }
 
 async function startDuel(lobby) {
-  lobby.status = "active";
+  // status flips to "active" only once entryPrices/startedAt/history are all
+  // set — the global tick loop below starts ticking any "active" lobby every
+  // second, and fetchPricesNow() is an awaited network call, so flipping the
+  // status any earlier left a window where a tick could fire against a
+  // lobby with no entryPrices yet and crash the whole process.
   lobby.symbols = [...new Set([...lobby.host.picks, ...lobby.guest.picks].map((s) => ASSET_BINANCE[s]))];
   const prices = await fetchPricesNow(lobby.symbols);
   const entryFor = (picks) => Object.fromEntries(picks.map((s) => [s, prices[ASSET_BINANCE[s]]]));
   lobby.entryPrices = { A: entryFor(lobby.host.picks), B: entryFor(lobby.guest.picks) };
   lobby.startedAt = Date.now();
   lobby.history = [];
+  lobby.status = "active";
   broadcastLobbies();
 
   const payload = duelStartedPayload(lobby);
@@ -321,6 +326,7 @@ async function startDuel(lobby) {
 }
 
 function tickDuel(lobby) {
+  if (!lobby.entryPrices) return; // still mid-startDuel — skip this tick, don't crash
   const elapsed = (Date.now() - lobby.startedAt) / 1000;
   const timeLeft = Math.max(lobby.roundSeconds - elapsed, 0);
   const liveA = Object.fromEntries(
@@ -440,9 +446,20 @@ function finishDuel(lobby, pctA, pctB) {
 
 setInterval(() => {
   for (const lobby of lobbies.values()) {
-    if (lobby.status === "active") tickDuel(lobby);
+    if (lobby.status !== "active") continue;
+    try {
+      tickDuel(lobby);
+    } catch (err) {
+      // One buggy lobby must never take down every other in-progress duel.
+      console.error("tickDuel crashed for lobby", lobby.id, err);
+    }
   }
 }, TICK_MS);
+
+// Last line of defense: a bug anywhere must not kill every active duel on
+// the server. Log it and keep running instead of crashing the process.
+process.on("uncaughtException", (err) => console.error("uncaughtException:", err));
+process.on("unhandledRejection", (err) => console.error("unhandledRejection:", err));
 
 // ---- websocket wiring ----
 const wss = new WebSocketServer({ port: PORT });
