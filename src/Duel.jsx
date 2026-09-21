@@ -7,11 +7,13 @@ import { useAppKit } from "@reown/appkit/react";
 // signed nickname, ELO-style rank, achievements, match history, referrals.
 // Styled to match the main Hood app (ink/paper/IBM Plex Mono) instead of
 // living as a visually separate dark-mode page.
-// Temporary public tunnel to the dev machine's matchmaking server (localtunnel,
-// started ad hoc) so this works from the deployed prod site too — it dies
-// whenever that tunnel process stops. Set VITE_DUEL_WS_URL to override once
-// there's a real always-on host for server/duelServer.js.
-const WS_URL = import.meta.env.VITE_DUEL_WS_URL || "wss://dry-gifts-design.loca.lt";
+// Temporary public tunnel (SSH reverse tunnel via localhost.run) to the dev
+// machine's matchmaking server so this works from the deployed prod site too
+// — it dies whenever that tunnel process stops. Set VITE_DUEL_WS_URL to
+// override once there's a real always-on host for server/duelServer.js.
+// (localtunnel was tried first but shows a browser interstitial page that
+// silently breaks the WebSocket handshake — this one doesn't.)
+const WS_URL = import.meta.env.VITE_DUEL_WS_URL || "wss://0eed4adead8374.lhr.life";
 const ENTRY_AMOUNTS = [10, 25, 50, 75];
 const MAX_PICKS = 4;
 const ASSETS = [
