@@ -15,7 +15,7 @@ import { useAppKit } from "@reown/appkit/react";
 // the repo (fetched fresh on every connection attempt) so restarting the
 // tunnel only needs a one-line commit, not a rebuild. Set VITE_DUEL_WS_URL
 // to override once there's a real always-on host for server/duelServer.js.
-const WS_URL_FALLBACK = import.meta.env.VITE_DUEL_WS_URL || "wss://1a583ea2ea8f9c.lhr.life";
+const WS_URL_FALLBACK = import.meta.env.VITE_DUEL_WS_URL || "wss://47cbc989727ef9.lhr.life";
 const WS_URL_LOOKUP = "https://raw.githubusercontent.com/Grishakair/hood-app/main/public/duel-ws-url.txt";
 
 async function resolveWsUrl() {
