@@ -1,0 +1,468 @@
+<title>Best-Rate Borrow</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --paper: #F7F6F2;
+    --paper-2: #FFFFFF;
+    --ink: #14171A;
+    --ink-soft: #4B5058;
+    --line: #E1DFD8;
+    --line-strong: #C9C6BC;
+    --accent: #23624A;
+    --accent-soft: #E7EFE9;
+    --gold: #9A6B23;
+    --gold-soft: #F3E9D6;
+    --danger: #9B2C2C;
+    --danger-soft: #F7E8E8;
+    --code-bg: #EFEDE6;
+    --shadow: 0 1px 2px rgba(20,23,26,0.06);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #14161A;
+      --paper-2: #1B1E23;
+      --ink: #ECEAE3;
+      --ink-soft: #A6ABB3;
+      --line: #2C3037;
+      --line-strong: #3B4049;
+      --accent: #6FBF9A;
+      --accent-soft: #1C2B24;
+      --gold: #D9AE64;
+      --gold-soft: #2B2418;
+      --danger: #E39A9A;
+      --danger-soft: #2E1E1E;
+      --code-bg: #1E2126;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #14161A;
+    --paper-2: #1B1E23;
+    --ink: #ECEAE3;
+    --ink-soft: #A6ABB3;
+    --line: #2C3037;
+    --line-strong: #3B4049;
+    --accent: #6FBF9A;
+    --accent-soft: #1C2B24;
+    --gold: #D9AE64;
+    --gold-soft: #2B2418;
+    --danger: #E39A9A;
+    --danger-soft: #2E1E1E;
+    --code-bg: #1E2126;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+  }
+  .layout {
+    display: flex;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 20px;
+    gap: 40px;
+    align-items: flex-start;
+  }
+  nav.toc {
+    position: sticky;
+    top: 24px;
+    width: 240px;
+    flex-shrink: 0;
+    padding: 20px 0 40px;
+    font-size: 13px;
+  }
+  nav.toc a {
+    display: block;
+    color: var(--ink-soft);
+    text-decoration: none;
+    padding: 5px 0;
+    border-left: 2px solid transparent;
+    padding-left: 12px;
+    margin-left: -13px;
+  }
+  nav.toc a:hover { color: var(--accent); border-left-color: var(--accent); }
+  nav.toc .toc-title { font-weight: 600; color: var(--ink); margin-bottom: 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    nav.toc { position: static; width: 100%; padding-bottom: 8px; }
+    nav.toc a { display: inline-block; margin-right: 14px; padding-left: 0; border-left: none; }
+  }
+
+  main { flex: 1; min-width: 0; padding: 40px 0 80px; max-width: 780px; }
+
+  .kicker { font-size: 13px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+  h1 { font-size: 34px; font-weight: 700; margin: 0 0 12px; line-height: 1.15; text-wrap: balance; }
+  .subtitle { color: var(--ink-soft); font-size: 15px; margin-bottom: 34px; padding-bottom: 28px; border-bottom: 1px solid var(--line); }
+  .subtitle code { font-size: 13px; }
+
+  h2 { font-size: 23px; font-weight: 700; margin: 52px 0 16px; scroll-margin-top: 20px; }
+  h2 .num { color: var(--gold); font-family: 'IBM Plex Mono', monospace; font-weight: 600; margin-right: 10px; }
+  h3 { font-size: 17px; font-weight: 600; margin: 28px 0 10px; scroll-margin-top: 20px; }
+  p { margin: 0 0 16px; max-width: 68ch; }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; max-width: 66ch; }
+  li { margin-bottom: 8px; }
+  a { color: var(--accent); }
+  code { font-family: 'IBM Plex Mono', monospace; font-size: 0.88em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  strong { font-weight: 600; }
+
+  blockquote {
+    margin: 0 0 20px;
+    padding: 14px 18px;
+    border-left: 3px solid var(--gold);
+    background: var(--gold-soft);
+    border-radius: 0 6px 6px 0;
+    font-size: 15px;
+  }
+  blockquote p:last-child { margin-bottom: 0; }
+
+  .callout {
+    border: 1px solid var(--line);
+    background: var(--paper-2);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 20px 0;
+    box-shadow: var(--shadow);
+  }
+  .callout.finding { border-color: var(--accent); background: var(--accent-soft); }
+  .callout.risk { border-color: var(--danger); background: var(--danger-soft); }
+  .callout-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; color: var(--ink-soft); margin-bottom: 6px; }
+  .callout.finding .callout-label { color: var(--accent); }
+  .callout.risk .callout-label { color: var(--danger); }
+  .callout ol, .callout ul, .callout p { max-width: none; }
+  .callout > *:last-child { margin-bottom: 0; }
+
+  .table-wrap { overflow-x: auto; margin: 0 0 20px; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 560px; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { background: var(--paper-2); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink-soft); }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, th.num { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; text-align: right; }
+  tr.best td { background: var(--accent-soft); }
+  tr.worst td { background: var(--danger-soft); }
+
+  .badge { display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 2px 7px; border-radius: 5px; font-weight: 600; }
+  .badge.best { background: var(--accent-soft); color: var(--accent); }
+  .badge.worst { background: var(--danger-soft); color: var(--danger); }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.55;
+    margin: 0 0 20px;
+  }
+  pre code { background: none; padding: 0; }
+
+  .mermaid { background: var(--paper-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 0 0 24px; overflow-x: auto; }
+
+  hr.section-rule { border: none; border-top: 1px solid var(--line); margin: 44px 0; }
+
+  footer { color: var(--ink-soft); font-size: 12.5px; padding: 30px 0 10px; border-top: 1px solid var(--line); margin-top: 40px; }
+</style>
+
+<div class="layout">
+  <nav class="toc" aria-label="Table of contents">
+    <div class="toc-title">Contents</div>
+    <a href="#tldr">1. TL;DR</a>
+    <a href="#use-case">2. The use case</a>
+    <a href="#baseline">3. Existing baseline</a>
+    <a href="#matrix">4. Protocol &times; chain matrix</a>
+    <a href="#net-cost">5. Net cost formula</a>
+    <a href="#health-factor">6. Health factor</a>
+    <a href="#repayment">7. Repayment flow</a>
+    <a href="#simulation">8. Worked simulation</a>
+    <a href="#data-sources">9. Rate data sources</a>
+    <a href="#rewards">10. Claiming rewards</a>
+    <a href="#flow">11. Execution flow</a>
+    <a href="#tasks">12. Developer tasks</a>
+    <a href="#open-questions">13. Open questions</a>
+  </nav>
+
+  <main>
+    <div class="kicker">Product &amp; engineering scope &middot; Hood &mdash; Borrow</div>
+    <h1>Best-rate borrow, across protocols and chains</h1>
+    <div class="subtitle">
+      Status: draft for engineering scoping &middot; Data snapshot: rates pulled live 2026-09-24, ETH spot &asymp; $2,677 (Binance <code>ETHUSDT</code>). Every rate in this document is real, pulled from each protocol's own public API at write time &mdash; re-pull before shipping, rates move daily.
+    </div>
+
+    <h2 id="tldr"><span class="num">1</span>TL;DR</h2>
+    <p>Hood's Borrow panel already does something clever: given a collateral asset, it checks Aave v3 across <strong>every EVM chain Aave is deployed on</strong> and routes the user to whichever chain nets the best supply-minus-borrow rate, bridging there first via the existing NEAR Intents (Aurora) integration if needed. That's implemented today in <code>src/Borrow.jsx</code>.</p>
+    <p>This document scopes the next step: shop rates <strong>across protocols, not just across chains of one protocol</strong> &mdash; Aave, Compound v3, Spark, and Morpho Blue. (Kamino is addressed separately in &sect;4 &mdash; it's Solana-only, which changes the architecture entirely.)</p>
+    <blockquote>
+      <p>User holds 1 ETH on Base and wants USDC. Instead of naively supplying ETH and borrowing USDC on Base's Aave market, the product checks Aave / Compound / Spark / Morpho across Base, Arbitrum, and Ethereum, computes the <strong>net cost of borrowing</strong> &mdash; not just the raw borrow rate, see &sect;5 &mdash; and either keeps the user on Base or routes them through a bridge to wherever the net cost is genuinely lowest, but only if the saving clears the cost of moving.</p>
+    </blockquote>
+    <div class="callout finding">
+      <div class="callout-label">Headline finding</div>
+      <p>The worked simulation in &sect;8 uses today's real numbers and reaches a non-obvious conclusion: for a 1 ETH position, the "obviously best" cross-chain route is <em>not</em> worth it once bridging and gas costs are netted out &mdash; and one of the four protocols (Morpho Blue) is quietly the <strong>worst</strong> option today despite a competitive headline borrow rate, purely because of how it pays (or doesn't pay) yield on collateral. That distinction is the entire reason this needs careful engineering rather than "find the lowest borrow APY."</p>
+    </div>
+
+    <h2 id="use-case"><span class="num">2</span>The use case, restated precisely</h2>
+    <p>A user holds an asset (ETH) on one chain (Base) and wants liquidity in another asset (USDC) &mdash; <strong>without selling the ETH</strong> (no taxable event in many jurisdictions, no giving up upside exposure). The system should:</p>
+    <ol>
+      <li>Query supply APY for the collateral (ETH) and borrow APY for the target asset (USDC) across every supported protocol &times; chain combination.</li>
+      <li>Compute the <strong>net annual cost</strong> of borrowing at a safe LTV for each combination (&sect;5 explains why raw APY comparison is wrong).</li>
+      <li>Rank them, weighing the one-time cost of getting there (bridge fee + destination gas) against the annualized saving.</li>
+      <li>If a different protocol/chain wins net of moving costs: bridge ETH there, supply it as collateral, borrow USDC there, then bridge the borrowed USDC back to the chain the user wanted it on. If nothing beats staying put, execute locally and skip the bridge &mdash; <strong>the optimizer must be willing to say "do nothing."</strong></li>
+    </ol>
+
+    <h3>Why someone wants this (real use cases)</h3>
+    <ul>
+      <li><strong>Hedging a position</strong> &mdash; a user long ETH who's nervous about a near-term drop can borrow USDC against it as a partial hedge, instead of selling into weakness and re-buying later.</li>
+      <li><strong>Spending without selling</strong> &mdash; Hood already has a crypto card (<code>src/Card.jsx</code>, <code>src/lib/immersve.js</code>). Borrowing USDC to fund card spend keeps the ETH position intact &mdash; the single biggest reason people borrow against crypto instead of just swapping.</li>
+      <li><strong>Bridging cash flow</strong> &mdash; "I get paid next week but need $2k now": borrow against ETH you don't want to touch, repay from the next paycheck, no forced sale at a bad moment.</li>
+      <li><strong>Airdrop / point farming</strong> &mdash; some protocols reward borrowers and suppliers with points or tokens for TVL (Morpho's MORPHO, Compound's COMP, historically Aave's Merit program). A user may want exposure to a specific protocol's incentive program even where the raw net-cost math doesn't fully justify it &mdash; surface this as its own line item (&sect;10), never blended into the headline APY.</li>
+    </ul>
+
+    <h2 id="baseline"><span class="num">3</span>What's already built</h2>
+    <p>Baseline to extend, not replace:</p>
+    <ul>
+      <li><code>src/Borrow.jsx</code> already queries Aave v3's public GraphQL API (<code>api.v3.aave.com/graphql</code>) across every EVM chain in <code>AAVE_CHAINS</code> (Ethereum, Base, BNB Chain, Polygon, Optimism, Arbitrum, Monad).</li>
+      <li>Already computes a <strong>net cost metric</strong>, not a raw APY comparison: <code>netCostApy(rate) = ASSUMED_LTV * borrowApy - collateralAsset.supplyApy</code> (<code>ASSUMED_LTV = 0.65</code>), sorting chains by that.</li>
+      <li>Already applies a safety haircut: <code>safeBorrowAmount = maxBorrowAmount * 0.85</code> &mdash; 85% of the <em>maximum</em> borrowable amount, not a health-factor target per se (&sect;6 explains why that should change).</li>
+      <li>Already executes cross-chain moves via NEAR Intents / Aurora's 1-click swap API (<code>AURORA_QUOTE_URL</code> / <code>AURORA_DEPOSIT_SUBMIT_URL</code> / <code>AURORA_STATUS_URL</code> in <code>src/lib/shared.js</code>) &mdash; quote &rarr; deposit &rarr; poll status.</li>
+      <li>Does <strong>not yet</strong> support any protocol other than Aave, repayment, withdrawal/unwind, or reward claiming.</li>
+    </ul>
+    <p>This scope adds: Compound v3, Spark, and Morpho Blue as additional rate sources under the same net-cost ranking; repayment; unwind/withdraw; reward claiming; and a real health-factor target in place of the flat 85%-of-max heuristic.</p>
+
+    <h2 id="matrix"><span class="num">4</span>Protocol &times; chain matrix</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Protocol</th><th>Chains here</th><th>Collateral (ETH) earns yield?</th><th>Market structure</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Aave v3</strong></td>
+            <td>Ethereum, Base, Arbitrum (+Optimism, Polygon, BNB, Monad already wired)</td>
+            <td><span class="badge best">yes</span></td>
+            <td>Pooled per chain</td>
+            <td>Already integrated. Real-time via public GraphQL, no key.</td>
+          </tr>
+          <tr>
+            <td><strong>Compound v3</strong> (Comet)</td>
+            <td>Ethereum, Base, Arbitrum</td>
+            <td>Yes on the base-asset side; a collateral-only asset in a different market's base earns none &mdash; same trap as Morpho, check which market ETH sits in</td>
+            <td>One base asset per deployment</td>
+            <td>Borrow-side rate isn't on the free DefiLlama tier &mdash; pull live from Comet's <code>getBorrowRate(utilization)</code> or Compound's own subgraph at build time.</td>
+          </tr>
+          <tr>
+            <td><strong>Spark</strong></td>
+            <td>Ethereum only (not on Base/Arbitrum in this pull)</td>
+            <td><span class="badge best">yes</span></td>
+            <td>Pooled</td>
+            <td>A fork of Aave v3 (SparkLend) &mdash; likely a similar GraphQL/subgraph shape, confirm exact endpoint at build time. L1-only, so only relevant if an L1 route is already in play (usually isn't, for small positions &mdash; see &sect;8).</td>
+          </tr>
+          <tr>
+            <td><strong>Morpho Blue</strong></td>
+            <td>Ethereum, Base, Arbitrum</td>
+            <td><span class="badge worst">no, by default</span></td>
+            <td>Isolated, many markets per pair</td>
+            <td>Isolated markets pay yield only to suppliers of the <em>loan</em> asset (USDC); collateral (WETH) earns <strong>0%</strong> &mdash; confirmed live via Morpho's own API (<code>apyBase: 0</code> for every WETH-collateral position). Largest Base WETH/USDC market: 86% LLTV, public GraphQL (<code>blue-api.morpho.org/graphql</code>), no key.</td>
+          </tr>
+          <tr>
+            <td><strong>Kamino</strong></td>
+            <td><span class="badge worst">Solana only</span></td>
+            <td>Yes (on Solana)</td>
+            <td>Pooled</td>
+            <td><strong>Out of scope for v1.</strong> This flow assumes EVM &rarr; EVM bridging. Getting ETH into a Solana-native market needs an entirely different bridge (Wormhole/deBridge or a wrapped-asset route) and a different settlement-risk profile &mdash; recommend scoping separately rather than folding it in, so the "best net cost across everything" promise doesn't silently carry very different risk on one line versus another.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="net-cost"><span class="num">5</span>Why "lowest borrow rate" is the wrong metric</h2>
+    <p>The naive approach &mdash; find the protocol with the lowest USDC borrow APY &mdash; is wrong for two reasons the existing Aave-only code already gets right, and this expansion must preserve:</p>
+    <ol>
+      <li><strong>The collateral itself may or may not earn yield</strong>, and that has to be netted against the borrow cost. Aave / Compound (base-asset side) / Spark pay yield on supplied collateral; Morpho Blue's isolated markets structurally do not. Ignoring this makes Morpho look artificially competitive on a raw-APY comparison when it isn't, once netted &mdash; see &sect;8's real numbers.</li>
+      <li><strong>LTV/LLTV differs by protocol</strong> (80% on Aave, 86% on this Morpho market) &mdash; a protocol that lets you borrow more against the same collateral changes the absolute dollar cost/benefit even at an identical APY, so any comparison must fix a <em>target LTV</em> and compare every option at that same target, not each protocol's own max.</li>
+    </ol>
+    <h3>Formula</h3>
+    <p>Extend the existing <code>netCostApy</code>:</p>
+    <pre><code>net_annual_cost(protocol, chain) =
+  (collateral_value_usd &times; target_ltv &times; borrow_apy)
+  &minus; (collateral_value_usd &times; collateral_supply_apy)              // 0 for Morpho-style isolated markets
+  &minus; (collateral_value_usd &times; target_ltv &times; reward_apy_on_borrow)  // incentive tokens, priced conservatively
+  + (collateral_value_usd &times; reward_apy_on_supply)               // e.g. Aave Merit-style incentives, if any</code></pre>
+    <p>Rank every protocol &times; chain combination by this number (lower is better) &mdash; not by raw borrow APY. Price reward APYs at a conservative discount (e.g. 50%) to spot, since incentive programs change or end without notice and the token itself may be illiquid; show reward-inclusive and base-rate numbers as two separate figures in the UI.</p>
+
+    <h2 id="health-factor"><span class="num">6</span>Health factor &mdash; what to actually target</h2>
+    <p>The current <code>safeBorrowAmount = maxBorrowAmount * 0.85</code> is a reasonable rough margin but isn't expressed in the industry-standard unit &mdash; <strong>Health Factor (HF)</strong> &mdash; which is what every protocol's own tooling, alerts, and the user's mental model already use:</p>
+    <pre><code>HF = (collateral_value_usd &times; liquidation_threshold) / borrowed_value_usd</code></pre>
+    <p>Aave/Spark call this "liquidation threshold"; Morpho Blue's equivalent is the market's <strong>LLTV</strong> directly &mdash; Morpho doesn't separate max-LTV from liquidation-LTV the way Aave does, LLTV <em>is</em> the liquidation threshold.</p>
+    <div class="callout">
+      <div class="callout-label">Recommendation</div>
+      <ul>
+        <li><strong>On open, target HF &asymp; 1.8&ndash;2.0.</strong> Meaningfully more conservative than 85%-of-max, which on an 80%-max-LTV asset with an ~83% liquidation threshold often works out to an HF near 1.15&ndash;1.2 &mdash; uncomfortably tight for a position nobody actively watches. ETH can move 20%+ in a day.</li>
+        <li><strong>Monitor continuously.</strong> Warn at HF &lt; 1.4; treat HF &lt; 1.15 as urgent (repay-or-add-collateral prompt). Don't build auto-deleveraging into v1 without an explicit opt-in and its own security review &mdash; moving funds without a fresh signature each time is exactly the class of risk flagged in &sect;13.</li>
+        <li><strong>Recompute HF per protocol correctly</strong>: Aave/Spark expose <code>healthFactor</code> directly; Compound v3 exposes <code>isLiquidatable(account)</code> plus balances (compute HF manually); Morpho Blue: <code>HF = collateral_amount &times; oracle_price &times; LLTV / borrowed_amount</code>.</li>
+        <li>Because a position on a chain the user isn't actively watching is a small risk multiplier of its own, require a <strong>larger</strong> net benefit before recommending a cross-chain move than a same-chain protocol switch &mdash; e.g. the annualized saving should clear the moving cost by 3&ndash;5&times;, not just any positive margin.</li>
+      </ul>
+    </div>
+
+    <h2 id="repayment"><span class="num">7</span>Repayment flow</h2>
+    <p>Not implemented yet &mdash; full scope for this addition:</p>
+    <ol>
+      <li><strong>Partial or full repayment</strong>, from either the origin chain or the chain the debt actually sits on. Same-chain: <code>approve</code> + <code>repay</code> (Compound v3 models this as a <code>supply</code> of the base asset). Cross-chain: bridge the repayment amount first (same NEAR Intents flow), then repay &mdash; quote the bridge fee up front.</li>
+      <li><strong>Interest accrual between quote and execution</strong>: debt grows every block. Either overpay slightly (e.g. +0.5%) and refund the dust, or query exact current debt right before submitting and use <code>type(uint256).max</code> for the approval &mdash; the standard "repay full balance" pattern across Aave/Compound/Morpho.</li>
+      <li><strong>Full close-out</strong>: after full repayment, withdraw collateral. Moving it back to the user's original chain is a second bridge leg &mdash; quote this too, since for a fully-closed small position it can be a meaningful fraction of any yield earned over the position's life.</li>
+      <li><strong>UI must show, before confirming</strong>: current debt, interest accrued since last update, bridge cost, and (if closing) withdrawal + bridge-back cost &mdash; the same "show total cost before committing" principle as opening.</li>
+    </ol>
+
+    <h2 id="simulation"><span class="num">8</span>Worked simulation &mdash; 1 ETH on Base</h2>
+    <p><strong>Collateral value:</strong> 1 ETH &times; $2,677.36 = <strong>$2,677.36</strong>. <strong>Target LTV:</strong> 65% (matching the existing <code>ASSUMED_LTV</code>, inside every option's max/LLTV below) &rarr; borrow amount held constant at <strong>$1,740.28</strong> across all rows for an apples-to-apples comparison.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Option</th><th class="num">Supply APY</th><th class="num">Borrow APY</th><th class="num">Max LTV / LLTV</th><th class="num">Interest / yr</th><th class="num">Yield / yr</th><th class="num">Net cost / yr</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Base &mdash; Aave v3 <em>(today's default)</em></td>
+            <td class="num">1.42%</td><td class="num">4.97%</td><td class="num">80%</td>
+            <td class="num">$86.49</td><td class="num">$38.02</td><td class="num">$48.47</td>
+          </tr>
+          <tr class="worst">
+            <td>Arbitrum &mdash; Aave v3</td>
+            <td class="num">1.06%</td><td class="num">6.10%</td><td class="num">80%</td>
+            <td class="num">$106.16</td><td class="num">$28.38</td><td class="num">$77.78 <span class="badge worst">worse</span></td>
+          </tr>
+          <tr class="best">
+            <td>Ethereum &mdash; Aave v3</td>
+            <td class="num">1.44%</td><td class="num">4.44%</td><td class="num">80.5%</td>
+            <td class="num">$77.27</td><td class="num">$38.55</td><td class="num">$38.72 <span class="badge best">best raw</span></td>
+          </tr>
+          <tr class="worst">
+            <td>Base &mdash; Morpho Blue (WETH/USDC, $98M market)</td>
+            <td class="num">0%</td><td class="num">4.84%</td><td class="num">86%</td>
+            <td class="num">$84.23</td><td class="num">$0.00</td><td class="num">$84.23 <span class="badge worst">worst overall</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:13px;color:var(--ink-soft);">Compound v3 and Spark omitted from the ranked rows &mdash; their borrow-side APYs weren't retrievable from a free public endpoint in this pass (Compound Base WETH-market supply was 1.32% for reference). Pull both live per &sect;9 before wiring this into the product.</p>
+
+    <div class="callout finding">
+      <div class="callout-label">What this actually shows</div>
+      <ol>
+        <li><strong>Morpho's zero collateral yield makes it the worst of the four</strong>, despite a lower headline borrow rate (4.84% vs Aave Base's 4.97%) &mdash; exactly the failure mode &sect;5 warns about. A naive "lowest borrow rate wins" ranking would have picked the worst option on the table.</li>
+        <li><strong>Arbitrum is strictly worse than Base right now</strong> on both legs &mdash; no reason to move there today, contradicting the intuition that Arbitrum/Morpho would be the winner. Rates move daily; this is why ranking has to be computed live, never assumed.</li>
+        <li><strong>Ethereum mainnet Aave has the best raw net cost</strong> &mdash; a $9.75/yr improvement over Base. But moving 1 ETH collateral to L1 (plus later moving USDC back) means one or two L1-touching legs; at typical gas conditions a supply+borrow pair on Ethereum plus the initial bridge fee plausibly costs <strong>$15&ndash;$60+</strong> &mdash; which can exceed the entire annual saving being chased. This is the concrete case for the "require 3&ndash;5&times; the moving cost" rule in &sect;6.</li>
+        <li><strong>Net-net for this exact snapshot: staying on Base is the right call</strong>, or at most a same-L2 comparison (which today still favors Base). The product should be able to answer "no move is worth it right now," not just always route somewhere.</li>
+      </ol>
+    </div>
+    <p style="font-size:13px;color:var(--ink-soft);">Regenerate this table with live numbers as part of building the rate-aggregation service &mdash; treat the figures above as proof the model produces a real, checkable, non-obvious answer, not as a table to hardcode.</p>
+
+    <h2 id="data-sources"><span class="num">9</span>Rate data sources</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Source</th><th>Auth</th><th>Gives</th></tr></thead>
+        <tbody>
+          <tr><td><a href="https://api.v3.aave.com/graphql">api.v3.aave.com/graphql</a></td><td>None</td><td>Supply/borrow APY, max LTV, per chain per reserve &mdash; already used in <code>src/Borrow.jsx</code>.</td></tr>
+          <tr><td><a href="https://blue-api.morpho.org/graphql">blue-api.morpho.org/graphql</a></td><td>None</td><td>Per-market supply/borrow APY, LLTV, TVL, for every isolated market.</td></tr>
+          <tr><td>Compound v3 (Comet)</td><td>&mdash;</td><td>Supply APY on DefiLlama's free <code>/pools</code> (<code>project: "compound-v3"</code>); borrow-side needs the Comet contract's <code>getBorrowRate(getUtilization())</code> or Compound's subgraph &mdash; confirm current endpoint at build time.</td></tr>
+          <tr><td>Spark (SparkLend)</td><td>&mdash;</td><td>DefiLlama free <code>/pools</code> has Ethereum-only supply APY (<code>project: "sparklend"</code>). Confirm borrow-side API and whether Spark has expanded beyond Ethereum by build time.</td></tr>
+          <tr><td><a href="https://yields.llama.fi/pools">yields.llama.fi/pools</a></td><td>None</td><td>Broad supply-side coverage for sanity-checks / fallback, plus TVL for liquidity-depth checks.</td></tr>
+          <tr><td>Binance <code>ticker/price</code></td><td>None</td><td>Spot price for collateral-value-in-USD math &mdash; same pattern already used in <code>src/Duel.jsx</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>Example queries used to produce this document</h3>
+    <pre><code>// Aave v3 &mdash; supply/borrow APY + max LTV, three chains at once
+{ markets(request: { chainIds: [8453, 42161, 1] }) {
+    reserves {
+      underlyingToken { symbol }
+      supplyInfo { apy { formatted } maxLTV { value } }
+      borrowInfo { apy { formatted } borrowingState }
+    }
+} }</code></pre>
+    <pre><code>// Morpho Blue &mdash; every market on Base + Arbitrum, biggest first
+{ markets(first: 100, where: { chainId_in: [8453, 42161] },
+          orderBy: SupplyAssetsUsd, orderDirection: Desc) {
+    items {
+      loanAsset { symbol } collateralAsset { symbol } lltv
+      state { supplyApy borrowApy supplyAssetsUsd borrowAssetsUsd }
+    }
+} }  // then filter client-side for the WETH/USDC pair</code></pre>
+    <p><strong>Polling cadence:</strong> rates move slowly enough that every 2&ndash;5 minutes per protocol/chain is plenty for ranking; cache aggressively and only re-quote exact numbers right before a user commits to a route &mdash; both rates and liquidity can move between "here's the best option" and "confirm."</p>
+
+    <h2 id="rewards"><span class="num">10</span>Claiming incentive rewards</h2>
+    <ul>
+      <li><strong>Morpho</strong> &mdash; MORPHO incentives on many markets, distributed off-chain and claimed via <a href="https://merkl.xyz">Merkl</a> (<code>api.merkl.xyz</code>): fetch the user's claimable proof, submit it to Merkl's on-chain distributor. Confirm current API paths at build time &mdash; Merkl's API has evolved.</li>
+      <li><strong>Compound v3</strong> &mdash; native COMP rewards on some Comet deployments via the <code>CometRewards</code> contract's <code>getRewardOwed</code> / <code>claim</code> &mdash; fully on-chain, no external indexer needed.</li>
+      <li><strong>Aave</strong> &mdash; has run various programs (stkAAVE emissions historically, "Merit" more recently on specific markets), claimable through Aave's rewards controller. Check per-market &mdash; the <code>rewardTokens</code> field in DefiLlama's pool data is a quick signal.</li>
+      <li><strong>Spark</strong> &mdash; has distributed SPK incentives on specific markets &mdash; check current program status/contract at build time.</li>
+    </ul>
+    <p>Surface "+ X% in token rewards (est.)" as a clearly separated second line under the base APY, never blended into the headline number, and build a periodic job per protocol so the user sees unclaimed amounts without checking each protocol's own site.</p>
+
+    <h2 id="flow"><span class="num">11</span>Execution flow, end to end</h2>
+    <pre class="mermaid">
+flowchart TD
+    A["User: 1 ETH on Base, wants USDC"] --> B["Rate aggregation service:\npoll Aave / Compound / Spark / Morpho\nacross Base, Arbitrum, Ethereum"]
+    B --> C["Net-cost ranking\n(section 5 formula, fixed target LTV)"]
+    C --> D{"Best net cost\nvs. staying on Base,\nafter moving costs?"}
+    D -->|"Stay is best"| E["Supply ETH + borrow USDC\ndirectly on Base Aave"]
+    D -->|"Move clears 3-5x threshold"| F["Bridge ETH: Base to target chain\n(NEAR Intents / Aurora, existing flow)"]
+    F --> G["Supply ETH as collateral\non target protocol"]
+    G --> H["Borrow USDC on target chain\nto safe Health Factor (about 1.8-2.0)"]
+    H --> I["Bridge USDC back: target chain to Base\n(same Intents mechanism, reverse leg)"]
+    E --> J["Position live: monitor Health Factor\ncontinuously"]
+    I --> J
+    J --> K{"User repays?"}
+    K -->|"Yes"| L["Repay (same-chain or bridge-then-repay)\nwithdraw collateral, optionally bridge home"]
+    K -->|"Not yet"| J
+    J -.-> M["Background: poll claimable\nprotocol reward tokens (Merkl / native)"]
+    </pre>
+
+    <h2 id="tasks"><span class="num">12</span>Developer task breakdown</h2>
+    <ol>
+      <li><strong>Rate aggregation service</strong> &mdash; generalize the existing Aave-only fetch into a protocol-agnostic adapter interface (<code>getSupplyApy</code>, <code>getBorrowApy</code>, <code>getMaxLtvOrLltv</code>, <code>getRewardApy</code>); one implementation per protocol.</li>
+      <li><strong>Net-cost ranking engine</strong> &mdash; implement the &sect;5 formula against the adapter output; unit-test against the &sect;8 numbers as a golden-value check.</li>
+      <li><strong>Route planner</strong> &mdash; stay-vs-move decision using the &sect;6 threshold rule; a full cost preview (bridge fee, destination gas, net annual benefit) before any transaction is signed.</li>
+      <li><strong>Execution orchestrator</strong> &mdash; a multi-step, resumable state machine (approve &rarr; bridge &rarr; supply &rarr; borrow &rarr; bridge-back); must survive the user closing the tab mid-flow, and handle a step failing partway without stranding funds on the wrong chain silently.</li>
+      <li><strong>Health factor monitor</strong> &mdash; background job recomputing HF per open position per protocol's own formula, alerting at the two thresholds.</li>
+      <li><strong>Repayment + unwind flow</strong> &mdash; per &sect;7, both same-chain and cross-chain paths, full-balance-safe repay pattern.</li>
+      <li><strong>Reward claim job</strong> &mdash; per &sect;10, one job per protocol with an active incentive program, surfaced as its own UI line.</li>
+    </ol>
+
+    <h2 id="open-questions"><span class="num">13</span>Open questions for the team</h2>
+    <div class="callout risk">
+      <div class="callout-label">Needs a decision before build</div>
+      <ul>
+        <li><strong>Kamino/Solana</strong> &mdash; separate scope item, or not at all for v1? Recommend: not for v1 (see &sect;4).</li>
+        <li><strong>Auto-rebalancing</strong> &mdash; should an open position ever move to a newer better-rate opportunity automatically, or only on open? Rebalancing carries the same bridge/gas cost as opening, so needs the same 3&ndash;5&times; threshold &mdash; and doing it automatically means holding some standing authorization to move user funds without a fresh signature each time, which is a custody question, not just an engineering one.</li>
+        <li><strong>Custody model for repeated actions</strong> &mdash; does every step (bridge / supply / borrow / repay / claim) require a fresh wallet signature (safest, most friction), or does the product hold a session key / smart-account permission for the multi-step flow (smoother, meaningfully larger attack surface if that key is ever compromised)? Worth solving once, consistently &mdash; this is the same class of question flagged for the Last Dance game's real-money plan.</li>
+        <li><strong>Audit posture</strong> &mdash; Aave v3, Compound v3, Spark, and Morpho Blue are all long-running, heavily audited, blue-chip protocols with real TVL; base protocol risk here is about as low as DeFi lending gets. The residual risk is almost entirely in <em>this product's own</em> orchestration code (approvals, the multi-step state machine, bridge integration) &mdash; that's what actually needs a security review before real funds flow through it.</li>
+      </ul>
+    </div>
+
+    <footer>
+      Full source with every reference link: <code>docs/borrow-rate-optimizer-scope.md</code> in the hood-app repo. Rates re-checked against live protocol APIs at document write time &mdash; always re-pull before using any number here in production.
+    </footer>
+  </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<script>
+  function initMermaid() {
+    var isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'base',
+      themeVariables: {
+        background: isDark ? '#1B1E23' : '#FFFFFF',
+        primaryColor: isDark ? '#1C2B24' : '#E7EFE9',
+        primaryTextColor: isDark ? '#ECEAE3' : '#14171A',
+        primaryBorderColor: isDark ? '#6FBF9A' : '#23624A',
+        lineColor: isDark ? '#A6ABB3' : '#4B5058',
+        fontFamily: 'IBM Plex Sans, sans-serif',
+        fontSize: '13px'
+      }
+    });
+  }
+  try { initMermaid(); } catch (e) {}
+</script>
