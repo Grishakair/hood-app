@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Last Dance — flow export for UI/UX design</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --ink: #0A0A0A;
+    --gray: #6B6B6B;
+    --line: #D8D6CE;
+    --paper: #FDFCF9;
+    --p1: #3B5BFD; /* blue */
+    --p2: #8B5CF6; /* purple */
+    --p3: #F59E0B; /* amber */
+    --p4: #06B6D4; /* cyan */
+    --p5: #EC4899; /* pink */
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: #EDEBE3;
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--ink);
+    padding: 40px 20px 120px;
+  }
+
+  .flow-title {
+    text-align: center;
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .flow-sub {
+    text-align: center;
+    font-size: 13px;
+    color: var(--gray);
+    margin-bottom: 48px;
+  }
+
+  .screens {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 40px;
+    justify-content: center;
+    align-items: flex-start;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .screen-block {
+    width: 440px;
+  }
+  .screen-label {
+    font-size: 12px;
+    color: var(--gray);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .screen-label b { color: var(--ink); }
+  .screen-note {
+    font-size: 11px;
+    color: var(--gray);
+    margin-top: 8px;
+    line-height: 1.5;
+  }
+
+  .card {
+    background: var(--paper);
+    border: 1px solid var(--ink);
+    padding: 24px;
+    position: relative;
+  }
+
+  .header { margin-bottom: 16px; text-align: center; }
+  .header-title { display: block; font-size: 22px; font-weight: 600; }
+  .header-sub { display: block; font-size: 12px; color: var(--gray); margin-top: 4px; }
+
+  .profile-corner {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--gray);
+    font-family: inherit;
+    font-size: 11px;
+  }
+
+  .top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    margin-bottom: 12px;
+  }
+  .balance { font-weight: 600; }
+  .tier-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--line);
+    padding: 2px 6px;
+    width: fit-content;
+    color: var(--gray);
+    margin-top: 4px;
+  }
+  .tier-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: var(--p3); }
+
+  .section { display: flex; flex-direction: column; }
+  .label { font-size: 13px; color: var(--gray); margin-bottom: 8px; }
+  .hint { margin-top: 8px; margin-bottom: 8px; font-size: 12px; color: var(--gray); text-align: center; }
+
+  button, .btn {
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .primary-btn {
+    margin-top: 8px;
+    padding: 14px 0;
+    border: 1px solid var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+    font-size: 14px;
+    width: 100%;
+    text-align: center;
+  }
+  .secondary-btn {
+    margin-top: 10px;
+    padding: 12px 0;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink);
+    font-size: 13px;
+    width: 100%;
+    text-align: center;
+  }
+  .input {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink);
+    font-size: 14px;
+    margin-bottom: 12px;
+    font-family: inherit;
+  }
+  .chip-row { display: flex; gap: 8px; margin-bottom: 12px; }
+  .chip {
+    flex: 1;
+    padding: 10px 0;
+    border: 1px solid var(--line);
+    text-align: center;
+    font-size: 14px;
+  }
+  .chip.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+  .asset-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
+  .asset-chip { padding: 8px 0; border: 1px solid var(--line); text-align: center; font-size: 12px; }
+  .asset-chip.active { background: var(--p1); color: var(--paper); border-color: var(--p1); font-weight: 600; }
+
+  .lobby-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    margin-bottom: 10px;
+  }
+  .row-sub { font-size: 12px; color: var(--gray); }
+  .join-btn {
+    padding: 8px 16px;
+    border: 1px solid var(--ink);
+    background: transparent;
+    color: var(--ink);
+    font-size: 13px;
+  }
+
+  /* --- NEW: battleground search/queue screen --- */
+  .queue-wrap { text-align: center; }
+  .queue-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .queue-sub { font-size: 12px; color: var(--gray); margin-bottom: 24px; }
+  .queue-slots { display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }
+  .queue-slot {
+    width: 64px; height: 64px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; border: 1px dashed var(--line); color: var(--gray);
+  }
+  .queue-slot.filled { border: 1px solid var(--ink); border-style: solid; }
+  .queue-slot.you { box-shadow: 0 0 0 2px var(--ink); }
+  .queue-count { font-size: 28px; font-weight: 600; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+  .queue-pot { font-size: 12px; color: var(--gray); margin-bottom: 20px; }
+  .pulse {
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* --- 5-player battle row --- */
+  .players-row { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
+  .player-chip { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }
+  .player-avatar {
+    width: 44px; height: 44px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; font-size: 20px;
+    border: 1px solid var(--ink);
+  }
+  .player-name { font-size: 10px; text-align: center; max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .player-pct { font-size: 11px; font-weight: 700; }
+
+  .timer {
+    text-align: center;
+    font-size: 38px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chart-svg { width: 100%; height: 140px; display: block; margin-bottom: 16px; }
+
+  .rank-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    margin-bottom: 8px;
+  }
+  .rank-row.win { border-color: var(--ink); border-width: 2px; }
+  .rank-num { font-size: 13px; color: var(--gray); width: 20px; }
+  .rank-name { font-size: 13px; font-weight: 600; }
+  .rank-pct { font-size: 14px; font-weight: 700; }
+
+  .result-banner {
+    text-align: center;
+    font-size: 15px;
+    font-weight: 600;
+    border: 1px solid var(--ink);
+    padding: 14px 12px;
+    margin-bottom: 16px;
+  }
+
+  .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+  .stat-box { padding: 12px 14px; border: 1px solid var(--line); text-align: center; }
+  .stat-value { font-size: 20px; font-weight: 600; }
+
+  .ach-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px; }
+  .ach-card { padding: 10px 6px; border: 1px solid var(--line); text-align: center; opacity: 1; }
+  .ach-card.locked { opacity: 0.3; }
+  .ach-emoji { font-size: 22px; }
+  .ach-title { font-size: 10px; margin-top: 4px; line-height: 1.2; }
+
+  .disconnect { margin-top: 16px; font-size: 12px; color: var(--gray); text-decoration: underline; text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="flow-title">⚔️ Last Dance — full flow, static export</div>
+<div class="flow-sub">Every screen state in one page for the design pass. No JS logic — hardcoded example data only.</div>
+
+<div class="screens">
+
+  <!-- 1. CONNECT -->
+  <div class="screen-block">
+    <div class="screen-label"><b>1. Connect</b> — first thing anyone sees</div>
+    <div class="card">
+      <div class="header">
+        <span class="header-title">🕺 Last Dance</span>
+        <span class="header-sub">whoever's up after the round takes it all</span>
+      </div>
+      <div class="section">
+        <div class="hint">Connect your wallet to play — it doubles as your login.</div>
+        <button class="primary-btn">[ Connect Wallet ]</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. NICKNAME -->
+  <div class="screen-block">
+    <div class="screen-label"><b>2. Nickname</b> — one-time signup step</div>
+    <div class="card">
+      <div class="header">
+        <span class="header-title">🕺 Last Dance</span>
+        <span class="header-sub">whoever's up after the round takes it all</span>
+      </div>
+      <div class="section">
+        <div class="label">Pick a nickname</div>
+        <input class="input" placeholder="Nickname" value="Grisha" />
+        <button class="primary-btn">[ Sign &amp; Save ]</button>
+        <div class="hint">Signing is free — it proves the address owner set this nickname.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. OLD LOBBY (for reference — being replaced) -->
+  <div class="screen-block">
+    <div class="screen-label"><b>3. Old lobby list</b> — being replaced by the queue below</div>
+    <div class="card">
+      <button class="profile-corner">👤 Profile</button>
+      <div class="header">
+        <span class="header-title">🕺 Last Dance</span>
+        <span class="header-sub">whoever's up after the round takes it all</span>
+      </div>
+      <div class="top-bar">
+        <div>
+          <span>Grisha · <span class="row-sub">0x67Ee…F854</span></span>
+          <div class="tier-badge"><span class="tier-dot"></span>Bronze · 984</div>
+        </div>
+        <span class="balance">$950.00</span>
+      </div>
+      <div class="section">
+        <div class="label">Open games right now</div>
+        <div class="lobby-row">
+          <div>
+            <div style="font-weight:600; display:flex; align-items:center; gap:8px;">Bob <span class="tier-badge"><span class="tier-dot"></span>Silver · 1120</span></div>
+            <div class="row-sub">$25 · AAVE</div>
+          </div>
+          <button class="join-btn">play</button>
+        </div>
+        <div class="label" style="margin-top:20px;">Or start your own game</div>
+        <div class="chip-row">
+          <div class="chip">$10</div>
+          <div class="chip active">$25</div>
+          <div class="chip">$50</div>
+          <div class="chip">$75</div>
+        </div>
+        <div class="hint">Pick up to 4 coins — your stake splits evenly between them.</div>
+        <div class="asset-grid">
+          <div class="asset-chip active">ZEC</div>
+          <div class="asset-chip">NEAR</div>
+          <div class="asset-chip">ETH</div>
+          <div class="asset-chip">AAVE</div>
+        </div>
+        <button class="primary-btn">[ Create Game ]</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. NEW: BATTLEGROUND SEARCH (queue) -->
+  <div class="screen-block">
+    <div class="screen-label"><b>4. NEW — Battleground search</b> — replaces the lobby list. Dota/Clash Royale style queue: search PVP, auto-starts at 5 players, winner takes the whole pot.</div>
+    <div class="card">
+      <button class="profile-corner">👤 Profile</button>
+      <div class="header">
+        <span class="header-title">🕺 Last Dance</span>
+        <span class="header-sub">whoever's up after the round takes it all</span>
+      </div>
+      <div class="top-bar">
+        <div>
+          <span>Grisha · <span class="row-sub">0x67Ee…F854</span></span>
+          <div class="tier-badge"><span class="tier-dot"></span>Bronze · 984</div>
+        </div>
+        <span class="balance">$950.00</span>
+      </div>
+
+      <div class="section" style="margin-bottom: 20px;">
+        <div class="label">Stake</div>
+        <div class="chip-row">
+          <div class="chip">$10</div>
+          <div class="chip active">$25</div>
+          <div class="chip">$50</div>
+          <div class="chip">$75</div>
+        </div>
+        <div class="hint">Pick up to 4 coins — your stake splits evenly between them.</div>
+        <div class="asset-grid">
+          <div class="asset-chip active">ZEC</div>
+          <div class="asset-chip">NEAR</div>
+          <div class="asset-chip">ETH</div>
+          <div class="asset-chip">AAVE</div>
+        </div>
+        <button class="primary-btn">[ Search Battleground ]</button>
+      </div>
+
+      <div class="queue-wrap">
+        <div class="queue-title pulse">Searching for players…</div>
+        <div class="queue-sub">$25 battleground · winner takes $125</div>
+        <div class="queue-count">3 / 5</div>
+        <div class="queue-slots">
+          <div class="queue-slot filled you" style="background:var(--p1); color:var(--paper);">🕺</div>
+          <div class="queue-slot filled" style="background:var(--p2); color:var(--paper);">🕺</div>
+          <div class="queue-slot filled" style="background:var(--p3); color:var(--paper);">🕺</div>
+          <div class="queue-slot">?</div>
+          <div class="queue-slot">?</div>
+        </div>
+        <button class="secondary-btn">cancel search</button>
+      </div>
+    </div>
+    <div class="screen-note">Idea to design around: this card can just live where the lobby list used to be — pick stake+coins once, hit search, then it morphs into this queue state until 5/5 fills and the round auto-starts.</div>
+  </div>
+
+  <!-- 5. ROUND — 5 players -->
+  <div class="screen-block">
+    <div class="screen-label"><b>5. NEW — Round, 5-player battle</b> — same live % chart idea, now 5 lines instead of 2</div>
+    <div class="card">
+      <div class="header">
+        <span class="header-title">🕺 Last Dance</span>
+        <span class="header-sub">whoever's up after 30 seconds takes it all</span>
+      </div>
+      <div class="players-row">
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p1); color:var(--paper);">🕺</div>
+          <div class="player-name">Grisha (you)</div>
+          <div class="player-pct" style="color:var(--p1);">+0.31%</div>
+        </div>
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p2); color:var(--paper);">🕺</div>
+          <div class="player-name">Bob</div>
+          <div class="player-pct" style="color:var(--p2);">+0.18%</div>
+        </div>
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p3); color:var(--paper);">🕺</div>
+          <div class="player-name">Nikita</div>
+          <div class="player-pct" style="color:var(--p3);">-0.04%</div>
+        </div>
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p4); color:var(--paper);">🕺</div>
+          <div class="player-name">Dasha</div>
+          <div class="player-pct" style="color:var(--p4);">-0.12%</div>
+        </div>
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p5); color:var(--paper);">🕺</div>
+          <div class="player-name">Egor</div>
+          <div class="player-pct" style="color:var(--p5);">-0.21%</div>
+        </div>
+      </div>
+      <div class="timer">0:17</div>
+      <svg class="chart-svg" viewBox="0 0 400 140">
+        <line x1="8" y1="80" x2="392" y2="80" stroke="var(--line)" stroke-dasharray="4 4"/>
+        <polyline points="8,90 60,85 120,70 180,60 240,50 300,40 360,32 392,28" fill="none" stroke="var(--p1)" stroke-width="3"/>
+        <polyline points="8,85 60,82 120,75 180,68 240,62 300,58 360,52 392,48" fill="none" stroke="var(--p2)" stroke-width="3"/>
+        <polyline points="8,80 60,84 120,88 180,90 240,86 300,92 360,95 392,96" fill="none" stroke="var(--p3)" stroke-width="3"/>
+        <polyline points="8,82 60,90 120,95 180,100 240,105 300,102 360,108 392,110" fill="none" stroke="var(--p4)" stroke-width="3"/>
+        <polyline points="8,78 60,92 120,98 180,108 240,112 300,116 360,118 392,120" fill="none" stroke="var(--p5)" stroke-width="3"/>
+      </svg>
+      <div class="rank-row">
+        <span class="rank-num">1</span>
+        <span class="rank-name" style="color:var(--p1);">Grisha (you) 👑</span>
+        <span class="rank-pct" style="color:var(--p1);">+0.31%</span>
+      </div>
+      <div class="rank-row">
+        <span class="rank-num">2</span>
+        <span class="rank-name" style="color:var(--p2);">Bob</span>
+        <span class="rank-pct" style="color:var(--p2);">+0.18%</span>
+      </div>
+      <div class="rank-row">
+        <span class="rank-num">3</span>
+        <span class="rank-name" style="color:var(--p3);">Nikita</span>
+        <span class="rank-pct" style="color:var(--p3);">-0.04%</span>
+      </div>
+    </div>
+    <div class="screen-note">Ranked list below the chart is truncated to top 3 in-round to save space — full 5 shows on the result screen.</div>
+  </div>
+
+  <!-- 6. RESULT — 5 players -->
+  <div class="screen-block">
+    <div class="screen-label"><b>6. NEW — Result, winner takes the whole pot</b></div>
+    <div class="card">
+      <div class="header">
+        <span class="header-title">🕺 Last Dance</span>
+        <span class="header-sub">whoever's up after 30 seconds takes it all</span>
+      </div>
+      <div class="players-row">
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p1); color:var(--paper);">🕺</div>
+          <div class="player-name">Grisha (you)</div>
+        </div>
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p2); color:var(--paper);">🕺</div>
+          <div class="player-name">Bob</div>
+        </div>
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p3); color:var(--paper);">🕺</div>
+          <div class="player-name">Nikita</div>
+        </div>
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p4); color:var(--paper);">🕺</div>
+          <div class="player-name">Dasha</div>
+        </div>
+        <div class="player-chip">
+          <div class="player-avatar" style="background:var(--p5); color:var(--paper);">🕺</div>
+          <div class="player-name">Egor</div>
+        </div>
+      </div>
+      <div class="result-banner">🏆 You won $125.00</div>
+      <div class="rank-row win">
+        <span class="rank-num">1</span>
+        <span class="rank-name" style="color:var(--p1);">Grisha (you) 👑</span>
+        <span class="rank-pct" style="color:var(--p1);">+0.31%</span>
+      </div>
+      <div class="rank-row">
+        <span class="rank-num">2</span>
+        <span class="rank-name" style="color:var(--p2);">Bob</span>
+        <span class="rank-pct" style="color:var(--p2);">+0.18%</span>
+      </div>
+      <div class="rank-row">
+        <span class="rank-num">3</span>
+        <span class="rank-name" style="color:var(--p3);">Nikita</span>
+        <span class="rank-pct" style="color:var(--p3);">-0.04%</span>
+      </div>
+      <div class="rank-row">
+        <span class="rank-num">4</span>
+        <span class="rank-name" style="color:var(--p4);">Dasha</span>
+        <span class="rank-pct" style="color:var(--p4);">-0.12%</span>
+      </div>
+      <div class="rank-row">
+        <span class="rank-num">5</span>
+        <span class="rank-name" style="color:var(--p5);">Egor</span>
+        <span class="rank-pct" style="color:var(--p5);">-0.21%</span>
+      </div>
+      <button class="primary-btn">[ Back to Lobby ]</button>
+    </div>
+  </div>
+
+  <!-- 7. PROFILE -->
+  <div class="screen-block">
+    <div class="screen-label"><b>7. Profile</b> — rank, achievements, referrals, history (unchanged by the queue rework)</div>
+    <div class="card">
+      <button class="profile-corner">🎮 Game</button>
+      <div class="header">
+        <span class="header-title">🕺 Last Dance</span>
+        <span class="header-sub">whoever's up after 30 seconds takes it all</span>
+      </div>
+      <div class="top-bar">
+        <div>
+          <span>Grisha · <span class="row-sub">0x67Ee…F854</span></span>
+          <div class="tier-badge"><span class="tier-dot"></span>Bronze · 984</div>
+        </div>
+        <span class="balance">$950.00</span>
+      </div>
+      <div class="section">
+        <div class="stats-grid">
+          <div class="stat-box">
+            <div class="stat-value">3-2-0</div>
+            <div class="row-sub">wins-losses-ties · 60%</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value">2</div>
+            <div class="row-sub">current streak (best 3)</div>
+          </div>
+        </div>
+        <div class="label" style="margin-top:16px;">Achievements</div>
+        <div class="ach-grid">
+          <div class="ach-card"><div class="ach-emoji">🥇</div><div class="ach-title">First Win</div></div>
+          <div class="ach-card locked"><div class="ach-emoji">🔥</div><div class="ach-title">3-Streak</div></div>
+          <div class="ach-card locked"><div class="ach-emoji">💰</div><div class="ach-title">High Roller</div></div>
+        </div>
+        <div class="label" style="margin-top:16px;">Invite a friend</div>
+        <div class="lobby-row">
+          <div>
+            <div style="font-weight:600;">USWY6K</div>
+            <div class="row-sub">Joined via your link: 1 · you get +$25, they get +$50</div>
+          </div>
+          <button class="join-btn">copy link</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
