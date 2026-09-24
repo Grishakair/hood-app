@@ -43,7 +43,33 @@ A user holds an asset (ETH) on one chain (Base) and wants liquidity in another a
   - Already executes cross-chain moves via NEAR Intents / Aurora's 1-click swap API (`AURORA_QUOTE_URL` / `AURORA_DEPOSIT_SUBMIT_URL` / `AURORA_STATUS_URL` in [`src/lib/shared.js`](../src/lib/shared.js)) — quote → deposit → poll status pattern.
   - Does **not yet** support: any protocol other than Aave, repayment, withdrawal/unwind, or reward claiming.
 
-This scope adds: Compound v3, Spark, Morpho Blue as additional rate sources (same "find best net cost" ranking, now cross-protocol); repayment; unwind/withdraw; reward claiming; a real health-factor target instead of a flat 85%-of-max heuristic.
+This scope adds: Compound v3, Spark, Morpho Blue as additional rate sources (same "find best net cost" ranking, now cross-protocol); repayment; unwind/withdraw; reward claiming; a real health-factor target instead of a flat 85%-of-max heuristic; and — the biggest addition — **Intents Connect** for the actual cross-chain execution (§3a), which changes what "the execution orchestrator" in §12 even needs to build.
+
+---
+
+## 3a. Intents Connect — a second, more powerful Aurora product we're not using yet
+
+The 1-click swap API already wired up (`AURORA_QUOTE_URL` etc.) and **Intents Connect** are **two distinct Aurora products**, confirmed directly from Aurora's docs (`docs.intents.aurora.dev`):
+
+| | 1-click swap (in use today) | Intents Connect (not yet integrated) |
+|---|---|---|
+| Domain | `intents-api.aurora.dev` | `intents-connect-api.aurora.dev` |
+| Auth | API key as a path segment | API key via `x-api-key` header |
+| What it does | Token exchange / bridge only | **Cross-chain protocol actions** — bridge *and* call a destination-chain contract in the same signed intent |
+| Example from their own docs | Swap asset A → asset B | "Deposit into Aave from Solana," "Withdraw from Aave to Solana" |
+
+**Why this matters for this scope:** Intents Connect's `/api/v1/executions/{wallet}/steps` endpoint accepts an array of **up to 30 chained EVM steps** (`to`, `value`, `functionSignature`, `parameters`) in one signed intent — and Aurora's own documentation explicitly names this exact pattern as supported: *"sequential destination-chain actions like collateral supply followed by borrowing."* Concretely, the whole "bridge ETH → approve → supply as collateral → borrow USDC" sequence in §11 could be **one Intents Connect execution**, not four separately-orchestrated transactions we build and babysit ourselves.
+
+**How it works (non-custodial):** the user signs one bounded intent (source chain/asset/amount, destination chain/target protocol, max fee, allowed execution path, deadline, nonce). An **intermediary account** on the destination chain — controlled via NEAR's Chain Signature (MPC), not by Aurora custodying anything — executes exactly that authorized sequence and nothing else. Execution is tracked through explicit states: `CREATED → DEPOSIT_PENDING → DEPOSIT_PROCESSING → OPERATION_PENDING → OPERATION_PROCESSING → SUCCESS`. On failure (gas spike, protocol pause, etc.), the failure reason is surfaced to the UI and "recovery paths are available for every failure state" — this is real, built-in retry/resume semantics we would not have to invent ourselves for §12's orchestrator task.
+
+**Chain coverage confirmed direct from their docs:** Base, Arbitrum, and Ethereum are all listed **"✅ Supported"** as both source and destination — exactly the three chains this scope needs.
+
+**What's still unconfirmed and needs a build-time check:**
+- Whether Intents Connect access is self-serve or gated (their docs point to a "Get access" step and `contact@aurora.dev` — may need to request API access before this can be integrated).
+- Fee structure for Intents Connect specifically (the 1-click API's fees are separately documented; Intents Connect's "API Keys & Fees" section wasn't fully surfaced in this pass).
+- Whether an actual "supply *then* borrow" chained example exists in Aurora's example gallery today, or only single-action examples (deposit/withdraw) — the steps API's own spec says chaining is supported, but confirm with a real dry-run (`"dry": true` in the request body) before relying on it for borrow specifically.
+
+**Recommendation:** prototype the exact "bridge ETH from Base → supply on target protocol → borrow USDC" sequence as one Intents Connect steps-execution dry-run early in implementation — if it works as documented, it replaces most of §12's "Execution orchestrator" task with an integration, not a from-scratch multi-chain state machine.
 
 ---
 
@@ -172,12 +198,9 @@ flowchart TD
     B --> C["Net-cost ranking\n(§5 formula, fixed target LTV)"]
     C --> D{"Best net cost\nvs. staying on Base,\nafter moving costs?"}
     D -->|"Stay is best"| E["Supply ETH + borrow USDC\ndirectly on Base Aave"]
-    D -->|"Move clears 3-5x threshold"| F["Bridge ETH: Base -> target chain\n(NEAR Intents / Aurora, existing flow)"]
-    F --> G["Supply ETH as collateral\non target protocol"]
-    G --> H["Borrow USDC on target chain\nto safe Health Factor (~1.8-2.0)"]
-    H --> I["Bridge USDC back: target chain -> Base\n(same Intents mechanism, reverse leg)"]
-    E --> J["Position live: monitor Health Factor\ncontinuously"]
-    I --> J
+    D -->|"Move clears 3-5x threshold"| F["Intents Connect: one signed execution\nbridge + supply + borrow chained\n(steps API, see §3a)"]
+    F --> J["Position live: monitor Health Factor\ncontinuously"]
+    E --> J
     J --> K{"User repays?"}
     K -->|"Yes"| L["Repay (same-chain or bridge-then-repay)\nwithdraw collateral, optionally bridge home"]
     K -->|"Not yet"| J
@@ -191,7 +214,7 @@ flowchart TD
 1. **Rate aggregation service** — generalize the existing Aave-only fetch in `src/Borrow.jsx` into a protocol-agnostic adapter interface (`getSupplyApy`, `getBorrowApy`, `getMaxLtvOrLltv`, `getRewardApy`) with one implementation per protocol (Aave adapter mostly already exists; Morpho Blue adapter is new but has a working query above; Compound/Spark need their borrow-side data source confirmed first).
 2. **Net-cost ranking engine** — implement the §5 formula against the adapter interface's normalized output; unit-test against the §8 numbers as a golden-value check.
 3. **Route planner** — decides stay-vs-move using the §6 threshold rule; produces a full cost preview (bridge fee, destination gas estimate, net annual benefit) *before* any transaction is signed.
-4. **Execution orchestrator** — a multi-step, resumable state machine (approve → bridge → supply → borrow → bridge-back), since this spans multiple chains and can take minutes; needs to survive the user closing the tab mid-flow and resuming, and to handle a step failing partway (e.g. bridge succeeds but the destination-chain supply tx fails — don't strand funds on the wrong chain silently).
+4. **Execution orchestrator** — per §3a, prototype this as an **Intents Connect steps-execution** first (`POST /api/v1/executions/{wallet}/steps`, chaining approve + supply + borrow as one signed intent) rather than building a bespoke multi-chain state machine — their own docs name this exact pattern as supported, and failure/recovery is already built in (`CREATED → ... → SUCCESS`, with recovery paths surfaced per failure state). Only fall back to a self-built approve → bridge → supply → borrow → bridge-back state machine if the steps API can't actually do it for our specific protocol calls once dry-run tested (get Intents Connect API access first — see §3a's open item on gated access).
 5. **Health factor monitor** — background job recomputing HF per open position per protocol's own formula (§6), alerting at the two thresholds.
 6. **Repayment + unwind flow** — per §7, both same-chain and cross-chain repayment paths, full-balance-safe repay pattern.
 7. **Reward claim job** — per §10, one job per protocol with an active incentive program, surfaced as its own UI line item.
@@ -202,5 +225,6 @@ flowchart TD
 
 - **Kamino/Solana**: separate scope item or not at all for v1? (Recommend: not for v1 — see §4.)
 - **Auto-rebalancing**: once opened, should the product ever move an existing position to a newer better-rate opportunity automatically, or only on open? Rebalancing has its own bridge+gas cost each time, so it needs the same 3–5× threshold logic as opening — and doing it automatically means holding some kind of standing authorization to move user funds without a fresh signature each time, which is a real custody/security question, not just an engineering one.
-- **Custody model for repeated actions**: does every step (bridge, supply, borrow, repay, claim) require a fresh wallet signature (safest, most friction), or does the product hold a session key / smart-account permission for the multi-step flow (smoother UX, meaningfully larger attack surface if that key or permission is ever compromised)? This is the same class of question flagged for the Last Dance game project's real-money plan — worth solving once, consistently, across both products rather than twice.
+- **Custody model for repeated actions**: does every step (bridge, supply, borrow, repay, claim) require a fresh wallet signature (safest, most friction), or does the product hold a session key / smart-account permission for the multi-step flow (smoother UX, meaningfully larger attack surface if that key or permission is ever compromised)? Intents Connect's own model (§3a) is a reasonable default answer for the open/bridge leg specifically — one bounded signature per execution, non-custodial intermediary account, no standing key — but repeat actions like ongoing health-factor monitoring or auto-rebalancing still need their own answer. This is the same class of question flagged for the Last Dance game project's real-money plan — worth solving once, consistently, across both products rather than twice.
+- **Intents Connect access**: confirm whether API access is self-serve or requires reaching out (`contact@aurora.dev`) before counting on it for the execution orchestrator — this could be a lead-time item, not just an integration task.
 - **Audit posture**: Aave v3, Compound v3, Spark, and Morpho Blue are all long-running, heavily audited, blue-chip protocols with real TVL — the base protocol risk here is about as low as DeFi lending gets. The residual risk is almost entirely in *this product's own* orchestration code (approvals, the multi-step state machine, bridge integration) — that's what actually needs a security review before real funds flow through it.

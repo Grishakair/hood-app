@@ -175,6 +175,7 @@
     <a href="#tldr">1. TL;DR</a>
     <a href="#use-case">2. The use case</a>
     <a href="#baseline">3. Existing baseline</a>
+    <a href="#intents-connect">3a. Intents Connect</a>
     <a href="#matrix">4. Protocol &times; chain matrix</a>
     <a href="#net-cost">5. Net cost formula</a>
     <a href="#health-factor">6. Health factor</a>
@@ -231,7 +232,36 @@
       <li>Already executes cross-chain moves via NEAR Intents / Aurora's 1-click swap API (<code>AURORA_QUOTE_URL</code> / <code>AURORA_DEPOSIT_SUBMIT_URL</code> / <code>AURORA_STATUS_URL</code> in <code>src/lib/shared.js</code>) &mdash; quote &rarr; deposit &rarr; poll status.</li>
       <li>Does <strong>not yet</strong> support any protocol other than Aave, repayment, withdrawal/unwind, or reward claiming.</li>
     </ul>
-    <p>This scope adds: Compound v3, Spark, and Morpho Blue as additional rate sources under the same net-cost ranking; repayment; unwind/withdraw; reward claiming; and a real health-factor target in place of the flat 85%-of-max heuristic.</p>
+    <p>This scope adds: Compound v3, Spark, and Morpho Blue as additional rate sources under the same net-cost ranking; repayment; unwind/withdraw; reward claiming; a real health-factor target in place of the flat 85%-of-max heuristic; and &mdash; the biggest addition &mdash; <strong>Intents Connect</strong>, which changes what the execution orchestrator in &sect;12 even needs to build.</p>
+
+    <h2 id="intents-connect"><span class="num">3a</span>Intents Connect &mdash; a second Aurora product we're not using yet</h2>
+    <p>The 1-click swap API already wired up and <strong>Intents Connect</strong> are <strong>two distinct Aurora products</strong>, confirmed directly from Aurora's own docs (<a href="https://docs.intents.aurora.dev">docs.intents.aurora.dev</a>):</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>1-click swap (in use today)</th><th>Intents Connect (not yet integrated)</th></tr></thead>
+        <tbody>
+          <tr><td>Domain</td><td><code>intents-api.aurora.dev</code></td><td><code>intents-connect-api.aurora.dev</code></td></tr>
+          <tr><td>Auth</td><td>API key as a path segment</td><td>API key via <code>x-api-key</code> header</td></tr>
+          <tr><td>What it does</td><td>Token exchange / bridge only</td><td><strong>Cross-chain protocol actions</strong> &mdash; bridge <em>and</em> call a destination-chain contract in the same signed intent</td></tr>
+          <tr><td>Their own example</td><td>Swap asset A &rarr; asset B</td><td>&ldquo;Deposit into Aave from Solana,&rdquo; &ldquo;Withdraw from Aave to Solana&rdquo;</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout finding">
+      <div class="callout-label">Why this matters for this scope</div>
+      <p>Intents Connect's <code>/api/v1/executions/{wallet}/steps</code> endpoint accepts an array of <strong>up to 30 chained EVM steps</strong> (<code>to</code>, <code>value</code>, <code>functionSignature</code>, <code>parameters</code>) in one signed intent &mdash; and Aurora's own documentation explicitly names this exact pattern as supported: <em>&ldquo;sequential destination-chain actions like collateral supply followed by borrowing.&rdquo;</em> Concretely, the whole &ldquo;bridge ETH &rarr; approve &rarr; supply as collateral &rarr; borrow USDC&rdquo; sequence in &sect;11 could be <strong>one Intents Connect execution</strong>, not four separately-orchestrated transactions we build and babysit ourselves.</p>
+    </div>
+    <p><strong>How it works (non-custodial):</strong> the user signs one bounded intent (source chain/asset/amount, destination chain/target protocol, max fee, allowed execution path, deadline, nonce). An <strong>intermediary account</strong> on the destination chain &mdash; controlled via NEAR's Chain Signature (MPC), not custodied by Aurora &mdash; executes exactly that authorized sequence and nothing else. Execution is tracked through explicit states: <code>CREATED &rarr; DEPOSIT_PENDING &rarr; DEPOSIT_PROCESSING &rarr; OPERATION_PENDING &rarr; OPERATION_PROCESSING &rarr; SUCCESS</code>. On failure (gas spike, protocol pause, etc.) the reason is surfaced to the UI and recovery paths are available for every failure state &mdash; real, built-in retry/resume semantics we wouldn't have to invent ourselves.</p>
+    <p><strong>Chain coverage confirmed direct from their docs:</strong> Base, Arbitrum, and Ethereum are all listed &ldquo;&#10003; Supported&rdquo; as both source and destination &mdash; exactly the three chains this scope needs.</p>
+    <div class="callout risk">
+      <div class="callout-label">Still needs a build-time check</div>
+      <ul>
+        <li>Whether access is self-serve or gated &mdash; their docs point to a &ldquo;Get access&rdquo; step and <code>contact@aurora.dev</code>, which could be a lead-time item.</li>
+        <li>Fee structure for Intents Connect specifically (not fully surfaced in this pass).</li>
+        <li>Whether a real chained &ldquo;supply then borrow&rdquo; example exists today or only single-action ones &mdash; confirm with an actual dry-run (<code>"dry": true</code>) before relying on it.</li>
+      </ul>
+    </div>
+    <p><strong>Recommendation:</strong> prototype the exact &ldquo;bridge ETH from Base &rarr; supply on target protocol &rarr; borrow USDC&rdquo; sequence as one Intents Connect steps-execution dry-run early in implementation. If it works as documented, it replaces most of &sect;12's execution-orchestrator task with an integration, not a from-scratch multi-chain state machine.</p>
 
     <h2 id="matrix"><span class="num">4</span>Protocol &times; chain matrix</h2>
     <div class="table-wrap">
@@ -406,12 +436,9 @@ flowchart TD
     B --> C["Net-cost ranking\n(section 5 formula, fixed target LTV)"]
     C --> D{"Best net cost\nvs. staying on Base,\nafter moving costs?"}
     D -->|"Stay is best"| E["Supply ETH + borrow USDC\ndirectly on Base Aave"]
-    D -->|"Move clears 3-5x threshold"| F["Bridge ETH: Base to target chain\n(NEAR Intents / Aurora, existing flow)"]
-    F --> G["Supply ETH as collateral\non target protocol"]
-    G --> H["Borrow USDC on target chain\nto safe Health Factor (about 1.8-2.0)"]
-    H --> I["Bridge USDC back: target chain to Base\n(same Intents mechanism, reverse leg)"]
-    E --> J["Position live: monitor Health Factor\ncontinuously"]
-    I --> J
+    D -->|"Move clears 3-5x threshold"| F["Intents Connect: one signed execution\nbridge + supply + borrow chained\n(steps API, see section 3a)"]
+    F --> J["Position live: monitor Health Factor\ncontinuously"]
+    E --> J
     J --> K{"User repays?"}
     K -->|"Yes"| L["Repay (same-chain or bridge-then-repay)\nwithdraw collateral, optionally bridge home"]
     K -->|"Not yet"| J
@@ -423,7 +450,7 @@ flowchart TD
       <li><strong>Rate aggregation service</strong> &mdash; generalize the existing Aave-only fetch into a protocol-agnostic adapter interface (<code>getSupplyApy</code>, <code>getBorrowApy</code>, <code>getMaxLtvOrLltv</code>, <code>getRewardApy</code>); one implementation per protocol.</li>
       <li><strong>Net-cost ranking engine</strong> &mdash; implement the &sect;5 formula against the adapter output; unit-test against the &sect;8 numbers as a golden-value check.</li>
       <li><strong>Route planner</strong> &mdash; stay-vs-move decision using the &sect;6 threshold rule; a full cost preview (bridge fee, destination gas, net annual benefit) before any transaction is signed.</li>
-      <li><strong>Execution orchestrator</strong> &mdash; a multi-step, resumable state machine (approve &rarr; bridge &rarr; supply &rarr; borrow &rarr; bridge-back); must survive the user closing the tab mid-flow, and handle a step failing partway without stranding funds on the wrong chain silently.</li>
+      <li><strong>Execution orchestrator</strong> &mdash; per &sect;3a, prototype this as an <strong>Intents Connect steps-execution</strong> first (chaining approve + supply + borrow as one signed intent) rather than a bespoke multi-chain state machine &mdash; their docs name this exact pattern as supported, and failure/recovery is already built in. Only fall back to a self-built approve &rarr; bridge &rarr; supply &rarr; borrow &rarr; bridge-back state machine if a dry-run shows the steps API can't actually do it for our specific protocol calls.</li>
       <li><strong>Health factor monitor</strong> &mdash; background job recomputing HF per open position per protocol's own formula, alerting at the two thresholds.</li>
       <li><strong>Repayment + unwind flow</strong> &mdash; per &sect;7, both same-chain and cross-chain paths, full-balance-safe repay pattern.</li>
       <li><strong>Reward claim job</strong> &mdash; per &sect;10, one job per protocol with an active incentive program, surfaced as its own UI line.</li>
@@ -435,7 +462,8 @@ flowchart TD
       <ul>
         <li><strong>Kamino/Solana</strong> &mdash; separate scope item, or not at all for v1? Recommend: not for v1 (see &sect;4).</li>
         <li><strong>Auto-rebalancing</strong> &mdash; should an open position ever move to a newer better-rate opportunity automatically, or only on open? Rebalancing carries the same bridge/gas cost as opening, so needs the same 3&ndash;5&times; threshold &mdash; and doing it automatically means holding some standing authorization to move user funds without a fresh signature each time, which is a custody question, not just an engineering one.</li>
-        <li><strong>Custody model for repeated actions</strong> &mdash; does every step (bridge / supply / borrow / repay / claim) require a fresh wallet signature (safest, most friction), or does the product hold a session key / smart-account permission for the multi-step flow (smoother, meaningfully larger attack surface if that key is ever compromised)? Worth solving once, consistently &mdash; this is the same class of question flagged for the Last Dance game's real-money plan.</li>
+        <li><strong>Custody model for repeated actions</strong> &mdash; does every step (bridge / supply / borrow / repay / claim) require a fresh wallet signature (safest, most friction), or does the product hold a session key / smart-account permission for the multi-step flow (smoother, meaningfully larger attack surface if that key is ever compromised)? Intents Connect's own model (&sect;3a) is a reasonable default for the open/bridge leg &mdash; one bounded signature per execution, non-custodial intermediary, no standing key &mdash; but ongoing health-factor monitoring or auto-rebalancing still need their own answer. Worth solving once, consistently &mdash; this is the same class of question flagged for the Last Dance game's real-money plan.</li>
+        <li><strong>Intents Connect access</strong> &mdash; confirm whether API access is self-serve or requires reaching out (<code>contact@aurora.dev</code>) before counting on it for the execution orchestrator &mdash; could be a lead-time item, not just an integration task.</li>
         <li><strong>Audit posture</strong> &mdash; Aave v3, Compound v3, Spark, and Morpho Blue are all long-running, heavily audited, blue-chip protocols with real TVL; base protocol risk here is about as low as DeFi lending gets. The residual risk is almost entirely in <em>this product's own</em> orchestration code (approvals, the multi-step state machine, bridge integration) &mdash; that's what actually needs a security review before real funds flow through it.</li>
       </ul>
     </div>
