@@ -9,13 +9,27 @@ import { dirname, join } from "path";
 // user profiles (rating/history/achievements/referrals) persisted to a flat
 // JSON file so they survive a server restart during dev. No real funds ever
 // move here.
+//
+// Supports three match types:
+//   - "test"  : practice, always 1v1, fixed virtual stake, never touches
+//               balance/rating/history.
+//   - "pvp"   : real (virtual-dollar) stake, auto-matched via a public queue.
+//   - "lobby" : real stake, private — a host creates it (optionally
+//               password-protected) and shares a link; joined by id.
+// Both "pvp" and "lobby" support size 2 (1v1) or 5 ("Battleground" —
+// winner takes the whole pot). Token picks happen AFTER the match is
+// found (a 20s pick window), not before — this is what makes queueing
+// fast regardless of basket choice.
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_FILE = join(__dirname, "data.json");
+// Overridable so a local test run never clobbers real profile data.
+const DATA_FILE = process.env.DUEL_DATA_FILE || join(__dirname, "data.json");
 const PORT = Number(process.env.DUEL_SERVER_PORT) || 8787;
 const DEFAULT_BALANCE = 1000;
 const ROUND_SECONDS = 30;
+const PICK_SECONDS = 20;
 const TICK_MS = 1000;
+const PICK_CHECK_MS = 500;
 const PRICE_REFRESH_MS = 3000;
 const MAX_PICKS = 4;
 const ELO_K = 32;
@@ -23,24 +37,35 @@ const REFERRAL_SIGNUP_BONUS = 50; // credited to the new player
 const REFERRAL_INVITER_BONUS = 25; // credited to whoever invited them
 const HISTORY_LIMIT = 20;
 const REFERRAL_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
+const STAKES = [10, 25, 50, 75];
+const SIZES = [2, 5];
+const PRACTICE_ENTRY_AMOUNT = 25;
 
+// The 20 pairs shown in the token-pick grid. Prices come from Binance spot
+// tickers (public REST API, no key needed) — this is a read-only price
+// oracle for the game, not an on-chain oracle; see docs/custody-plan.md for
+// what an on-chain price feed would need once real funds are involved.
 const ASSET_BINANCE = {
-  ZEC: "ZECUSDT",
-  NEAR: "NEARUSDT",
+  BTC: "BTCUSDT",
   ETH: "ETHUSDT",
-  AAVE: "AAVEUSDT",
-  BNB: "BNBUSDT",
-  TRX: "TRXUSDT",
   SOL: "SOLUSDT",
+  BNB: "BNBUSDT",
   XRP: "XRPUSDT",
-  DOGE: "DOGEUSDT",
-  LTC: "LTCUSDT",
   ADA: "ADAUSDT",
+  DOGE: "DOGEUSDT",
+  AVAX: "AVAXUSDT",
   LINK: "LINKUSDT",
   DOT: "DOTUSDT",
-  AVAX: "AVAXUSDT",
-  SUI: "SUIUSDT",
+  MATIC: "MATICUSDT",
+  LTC: "LTCUSDT",
+  TRX: "TRXUSDT",
+  ATOM: "ATOMUSDT",
+  NEAR: "NEARUSDT",
+  ZEC: "ZECUSDT",
+  AAVE: "AAVEUSDT",
   ARB: "ARBUSDT",
+  OP: "OPUSDT",
+  UNI: "UNIUSDT",
 };
 
 // Same ids the frontend's ACHIEVEMENT_DEFS map uses for title/description/icon.
@@ -54,6 +79,7 @@ const ACHIEVEMENT_DEFS = [
   { id: "full_basket", check: (u, ctx) => ctx?.won && ctx?.picks?.length >= 4 },
   { id: "whale_200", check: (u) => u.balance - DEFAULT_BALANCE >= 200 },
   { id: "first_referral", check: (u) => u.referrals.length >= 1 },
+  { id: "battleground_win", check: (u, ctx) => ctx?.won && ctx?.size >= 5 },
 ];
 
 function loadData() {
@@ -156,13 +182,6 @@ function publicProfile(address) {
   };
 }
 
-function sameBasket(a, b) {
-  if (a.length !== b.length) return false;
-  const sa = [...a].sort();
-  const sb = [...b].sort();
-  return sa.every((s, i) => s === sb[i]);
-}
-
 // ---- socket bookkeeping: one address can have several open tabs ----
 const socketsByAddress = new Map(); // lowercased address -> Set<ws>
 const addressBySocket = new Map(); // ws -> lowercased address
@@ -196,47 +215,92 @@ function sendToAddress(address, msg) {
   for (const ws of set) send(ws, msg);
 }
 
+function broadcastToLobby(lobby, msg) {
+  for (const p of lobby.players) sendToAddress(p.address, msg);
+}
+
 function broadcastAll(msg) {
   for (const ws of wss.clients) send(ws, msg);
 }
 
-// ---- lobbies & active duels share one map, keyed by id ----
-// { id, entryAmount, roundSeconds, host:{address,nickname,picks}, guest, status: open|active|done, symbols, entryPrices, history, startedAt }
+// ---- lobbies (queue buckets, private lobbies, and active/done duels) ----
+// { id, kind:'queue'|'lobby', matchType:'test'|'pvp'|'lobby', size, entryAmount,
+//   practice, password, players:[{address,nickname,picks,ready}],
+//   status:'queueing'|'picking'|'active'|'done', pickDeadline, symbols,
+//   entryPrices:{addr:{sym:price}}, startedAt, history, roundSeconds }
 const lobbies = new Map();
 
-function lobbySummary(l) {
-  const hostUser = getUser(l.host.address);
+function lobbyPlayerPublic(p) {
+  const u = getUser(p.address);
   return {
-    id: l.id,
-    entryAmount: l.entryAmount,
-    hostAddress: l.host.address,
-    hostNickname: l.host.nickname,
-    hostPicks: l.host.picks,
-    hostRating: Math.round(hostUser.rating),
-    hostTier: tierFor(hostUser.rating),
+    address: p.address,
+    nickname: p.nickname,
+    picks: p.picks,
+    ready: p.ready,
+    rating: Math.round(u.rating),
+    tier: tierFor(u.rating),
   };
 }
 
+function queueSummary(lobby) {
+  return {
+    id: lobby.id,
+    kind: lobby.kind,
+    matchType: lobby.matchType,
+    size: lobby.size,
+    entryAmount: lobby.entryAmount,
+    practice: lobby.practice,
+    hasPassword: !!lobby.password,
+    players: lobby.players.map(lobbyPlayerPublic),
+  };
+}
+
+function publicLobbyList() {
+  // Only surface open, password-less private lobbies (join-by-link is the
+  // primary flow; this list is a convenience, same as the old 1v1 browser).
+  return [...lobbies.values()]
+    .filter((l) => l.kind === "lobby" && l.status === "queueing" && !l.password)
+    .map((l) => ({
+      id: l.id,
+      size: l.size,
+      entryAmount: l.entryAmount,
+      hostNickname: l.players[0]?.nickname,
+      hostRating: lobbyPlayerPublic(l.players[0])?.rating,
+      hostTier: lobbyPlayerPublic(l.players[0])?.tier,
+      slotsFilled: l.players.length,
+    }));
+}
+
 function broadcastLobbies() {
-  const open = [...lobbies.values()].filter((l) => l.status === "open").map(lobbySummary);
-  broadcastAll({ type: "lobbies", lobbies: open });
+  broadcastAll({ type: "lobbies", lobbies: publicLobbyList() });
 }
 
 function hasActiveEngagement(address) {
   const key = address.toLowerCase();
   for (const l of lobbies.values()) {
-    if (l.status === "open" && l.host.address.toLowerCase() === key) return true;
-    if (l.status === "active" && (l.host.address.toLowerCase() === key || l.guest.address.toLowerCase() === key))
-      return true;
+    if (l.status === "done") continue;
+    if (l.players.some((p) => p.address.toLowerCase() === key)) return true;
   }
   return false;
 }
 
+function findLobbyForAddress(address, statuses) {
+  const key = address.toLowerCase();
+  for (const l of lobbies.values()) {
+    if (statuses && !statuses.includes(l.status)) continue;
+    if (l.players.some((p) => p.address.toLowerCase() === key)) return l;
+  }
+  return null;
+}
+
 // ---- Binance price cache shared across all active duels ----
 const priceCache = new Map();
+// Recent 20-pair % moves, kept fresh for the pick screen even before any
+// duel is running (so the token grid can show live daily change).
+const dayChangeCache = new Map();
 
 async function refreshPrices() {
-  const symbols = new Set();
+  const symbols = new Set(Object.values(ASSET_BINANCE));
   for (const l of lobbies.values()) {
     if (l.status === "active") l.symbols.forEach((s) => symbols.add(s));
   }
@@ -244,14 +308,34 @@ async function refreshPrices() {
   try {
     const query = encodeURIComponent(JSON.stringify([...symbols]));
     const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbols=${query}`);
-    if (!res.ok) return;
-    const rows = await res.json();
-    for (const row of rows) priceCache.set(row.symbol, parseFloat(row.price));
+    if (res.ok) {
+      const rows = await res.json();
+      for (const row of rows) priceCache.set(row.symbol, parseFloat(row.price));
+    }
   } catch {
     // transient hiccup — keep the stale cache, next refresh retries
   }
 }
+
+async function refreshDayChange() {
+  try {
+    const query = encodeURIComponent(JSON.stringify(Object.values(ASSET_BINANCE)));
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbols=${query}&type=MINI`);
+    if (res.ok) {
+      const rows = await res.json();
+      for (const row of rows) {
+        const pct = parseFloat(row.priceChangePercent ?? row.priceChange);
+        if (!Number.isNaN(pct)) dayChangeCache.set(row.symbol, pct);
+      }
+    }
+  } catch {
+    // best-effort only — the pick grid just shows "—" until this succeeds
+  }
+}
 setInterval(refreshPrices, PRICE_REFRESH_MS);
+setInterval(refreshDayChange, 15000);
+refreshPrices();
+refreshDayChange();
 
 async function fetchPricesNow(symbols) {
   const query = encodeURIComponent(JSON.stringify(symbols));
@@ -274,34 +358,18 @@ function portfolioPct(picks, entryPricesBySymbol, livePricesByBinanceSymbol) {
     if (!entry || !live) return null;
     return ((live - entry) / entry) * 100;
   });
-  if (changes.some((c) => c == null)) return null;
+  if (changes.length === 0 || changes.some((c) => c == null)) return null;
   return changes.reduce((s, c) => s + c, 0) / changes.length;
 }
 
 function duelStartedPayload(lobby) {
-  const hostUser = getUser(lobby.host.address);
-  const guestUser = getUser(lobby.guest.address);
   return {
     type: "duel_started",
     lobbyId: lobby.id,
     entryAmount: lobby.entryAmount,
+    practice: lobby.practice,
     roundSeconds: lobby.roundSeconds,
-    players: {
-      A: {
-        address: lobby.host.address,
-        nickname: lobby.host.nickname,
-        picks: lobby.host.picks,
-        rating: Math.round(hostUser.rating),
-        tier: tierFor(hostUser.rating),
-      },
-      B: {
-        address: lobby.guest.address,
-        nickname: lobby.guest.nickname,
-        picks: lobby.guest.picks,
-        rating: Math.round(guestUser.rating),
-        tier: tierFor(guestUser.rating),
-      },
-    },
+    players: lobby.players.map(lobbyPlayerPublic),
   };
 }
 
@@ -311,138 +379,201 @@ async function startDuel(lobby) {
   // second, and fetchPricesNow() is an awaited network call, so flipping the
   // status any earlier left a window where a tick could fire against a
   // lobby with no entryPrices yet and crash the whole process.
-  lobby.symbols = [...new Set([...lobby.host.picks, ...lobby.guest.picks].map((s) => ASSET_BINANCE[s]))];
+  lobby.symbols = [...new Set(lobby.players.flatMap((p) => p.picks).map((s) => ASSET_BINANCE[s]))];
   const prices = await fetchPricesNow(lobby.symbols);
-  const entryFor = (picks) => Object.fromEntries(picks.map((s) => [s, prices[ASSET_BINANCE[s]]]));
-  lobby.entryPrices = { A: entryFor(lobby.host.picks), B: entryFor(lobby.guest.picks) };
+  lobby.entryPrices = {};
+  for (const p of lobby.players) {
+    lobby.entryPrices[p.address.toLowerCase()] = Object.fromEntries(
+      p.picks.map((s) => [s, prices[ASSET_BINANCE[s]]])
+    );
+  }
   lobby.startedAt = Date.now();
+  lobby.roundSeconds = ROUND_SECONDS;
   lobby.history = [];
   lobby.status = "active";
   broadcastLobbies();
-
-  const payload = duelStartedPayload(lobby);
-  sendToAddress(lobby.host.address, payload);
-  sendToAddress(lobby.guest.address, payload);
+  broadcastToLobby(lobby, duelStartedPayload(lobby));
 }
 
 function tickDuel(lobby) {
   if (!lobby.entryPrices) return; // still mid-startDuel — skip this tick, don't crash
   const elapsed = (Date.now() - lobby.startedAt) / 1000;
   const timeLeft = Math.max(lobby.roundSeconds - elapsed, 0);
-  const liveA = Object.fromEntries(
-    lobby.host.picks.map((s) => [ASSET_BINANCE[s], priceCache.get(ASSET_BINANCE[s])])
-  );
-  const liveB = Object.fromEntries(
-    lobby.guest.picks.map((s) => [ASSET_BINANCE[s], priceCache.get(ASSET_BINANCE[s])])
-  );
-  const pctA = portfolioPct(lobby.host.picks, lobby.entryPrices.A, liveA);
-  const pctB = portfolioPct(lobby.guest.picks, lobby.entryPrices.B, liveB);
-  lobby.history.push({ t: Math.round((lobby.roundSeconds - timeLeft) * 10) / 10, pctA, pctB });
 
-  const tickMsg = { type: "tick", lobbyId: lobby.id, timeLeft, pctA, pctB, history: lobby.history };
-  sendToAddress(lobby.host.address, tickMsg);
-  sendToAddress(lobby.guest.address, tickMsg);
+  const pctByAddress = {};
+  for (const p of lobby.players) {
+    const key = p.address.toLowerCase();
+    const live = Object.fromEntries(p.picks.map((s) => [ASSET_BINANCE[s], priceCache.get(ASSET_BINANCE[s])]));
+    pctByAddress[key] = portfolioPct(p.picks, lobby.entryPrices[key], live);
+  }
+  lobby.history.push({ t: Math.round((lobby.roundSeconds - timeLeft) * 10) / 10, pct: pctByAddress });
 
-  if (timeLeft <= 0) finishDuel(lobby, pctA ?? 0, pctB ?? 0);
+  broadcastToLobby(lobby, {
+    type: "tick",
+    lobbyId: lobby.id,
+    timeLeft,
+    pct: pctByAddress,
+    history: lobby.history,
+  });
+
+  if (timeLeft <= 0) finishDuel(lobby, pctByAddress);
 }
 
-function finishDuel(lobby, pctA, pctB) {
+function finishDuel(lobby, finalPctByAddress) {
   lobby.status = "done";
-  let winner = "tie";
-  if (pctA > pctB) winner = "A";
-  else if (pctB > pctA) winner = "B";
+  const size = lobby.players.length;
+  const ranked = [...lobby.players]
+    .map((p) => ({ p, pct: finalPctByAddress[p.address.toLowerCase()] ?? 0 }))
+    .sort((a, b) => b.pct - a.pct);
+  const topPct = ranked[0].pct;
+  const winners = ranked.filter((r) => r.pct === topPct);
+  const winnerAddresses = new Set(winners.map((r) => r.p.address.toLowerCase()));
 
-  const hostUser = getUser(lobby.host.address);
-  const guestUser = getUser(lobby.guest.address);
-  const oldHostRating = hostUser.rating;
-  const oldGuestRating = guestUser.rating;
-
-  if (winner === "A") {
-    hostUser.balance += lobby.entryAmount;
-    guestUser.balance -= lobby.entryAmount;
-  } else if (winner === "B") {
-    guestUser.balance += lobby.entryAmount;
-    hostUser.balance -= lobby.entryAmount;
+  const pot = lobby.entryAmount * size;
+  const netByAddress = {};
+  for (const r of ranked) {
+    const key = r.p.address.toLowerCase();
+    netByAddress[key] = winnerAddresses.has(key)
+      ? pot / winners.length - lobby.entryAmount
+      : -lobby.entryAmount;
   }
 
-  const scoreHost = winner === "A" ? 1 : winner === "B" ? 0 : 0.5;
-  const scoreGuest = 1 - scoreHost;
-  hostUser.rating = updateElo(oldHostRating, oldGuestRating, scoreHost);
-  guestUser.rating = updateElo(oldGuestRating, oldHostRating, scoreGuest);
+  const newAchievementsByAddress = {};
+  if (!lobby.practice) {
+    // Pairwise ELO: every player plays a virtual 1-on-1 against every other
+    // player in the match, scored by final placement; ratings update off the
+    // average of those pairwise expected scores. For a 1v1 this reduces to
+    // exactly the old head-to-head formula.
+    const oldRatings = new Map(lobby.players.map((p) => [p.address.toLowerCase(), getUser(p.address).rating]));
+    const deltas = new Map(lobby.players.map((p) => [p.address.toLowerCase(), 0]));
+    for (const a of lobby.players) {
+      const keyA = a.address.toLowerCase();
+      for (const b of lobby.players) {
+        const keyB = b.address.toLowerCase();
+        if (keyA === keyB) continue;
+        const pctA = finalPctByAddress[keyA] ?? 0;
+        const pctB = finalPctByAddress[keyB] ?? 0;
+        const score = pctA > pctB ? 1 : pctA < pctB ? 0 : 0.5;
+        const expected = updateElo(oldRatings.get(keyA), oldRatings.get(keyB), score) - oldRatings.get(keyA);
+        deltas.set(keyA, deltas.get(keyA) + expected / (size - 1));
+      }
+    }
 
-  if (winner === "A") {
-    hostUser.wins += 1;
-    guestUser.losses += 1;
-    hostUser.streak = (hostUser.streak || 0) + 1;
-    guestUser.streak = 0;
-  } else if (winner === "B") {
-    guestUser.wins += 1;
-    hostUser.losses += 1;
-    guestUser.streak = (guestUser.streak || 0) + 1;
-    hostUser.streak = 0;
-  } else {
-    hostUser.ties += 1;
-    guestUser.ties += 1;
-    hostUser.streak = 0;
-    guestUser.streak = 0;
+    const now = Date.now();
+    for (const r of ranked) {
+      const key = r.p.address.toLowerCase();
+      const user = getUser(key);
+      const won = winnerAddresses.has(key);
+      user.balance += netByAddress[key];
+      user.rating = oldRatings.get(key) + deltas.get(key);
+      if (won) {
+        user.wins += 1;
+        user.streak = (user.streak || 0) + 1;
+      } else {
+        user.losses += 1;
+        user.streak = 0;
+      }
+      user.bestStreak = Math.max(user.bestStreak || 0, user.streak);
+
+      const opponents = lobby.players.filter((p) => p.address.toLowerCase() !== key);
+      user.history.push({
+        opponent: opponents[0]?.address,
+        opponentNickname: opponents.map((o) => o.nickname).join(", "),
+        entryAmount: lobby.entryAmount,
+        size,
+        picks: r.p.picks,
+        pct: r.pct,
+        result: won ? "win" : "loss",
+        ratingDelta: Math.round(deltas.get(key)),
+        timestamp: now,
+      });
+      user.history = user.history.slice(-HISTORY_LIMIT);
+
+      newAchievementsByAddress[key] = checkAchievements(user, {
+        won,
+        entryAmount: lobby.entryAmount,
+        picks: r.p.picks,
+        size,
+      });
+    }
+    saveData();
   }
-  hostUser.bestStreak = Math.max(hostUser.bestStreak || 0, hostUser.streak);
-  guestUser.bestStreak = Math.max(guestUser.bestStreak || 0, guestUser.streak);
 
-  const now = Date.now();
-  hostUser.history.push({
-    opponent: lobby.guest.address,
-    opponentNickname: lobby.guest.nickname,
+  const resultMsg = {
+    type: "duel_result",
+    lobbyId: lobby.id,
     entryAmount: lobby.entryAmount,
-    picks: lobby.host.picks,
-    oppPicks: lobby.guest.picks,
-    pct: pctA,
-    oppPct: pctB,
-    result: winner === "A" ? "win" : winner === "B" ? "loss" : "tie",
-    ratingDelta: Math.round(hostUser.rating - oldHostRating),
-    timestamp: now,
-  });
-  hostUser.history = hostUser.history.slice(-HISTORY_LIMIT);
-  guestUser.history.push({
-    opponent: lobby.host.address,
-    opponentNickname: lobby.host.nickname,
-    entryAmount: lobby.entryAmount,
-    picks: lobby.guest.picks,
-    oppPicks: lobby.host.picks,
-    pct: pctB,
-    oppPct: pctA,
-    result: winner === "B" ? "win" : winner === "A" ? "loss" : "tie",
-    ratingDelta: Math.round(guestUser.rating - oldGuestRating),
-    timestamp: now,
-  });
-  guestUser.history = guestUser.history.slice(-HISTORY_LIMIT);
-
-  const hostNewAchievements = checkAchievements(hostUser, {
-    won: winner === "A",
-    entryAmount: lobby.entryAmount,
-    picks: lobby.host.picks,
-  });
-  const guestNewAchievements = checkAchievements(guestUser, {
-    won: winner === "B",
-    entryAmount: lobby.entryAmount,
-    picks: lobby.guest.picks,
-  });
-
-  saveData();
-
-  const resultMsg = { type: "duel_result", lobbyId: lobby.id, winner, pctA, pctB, entryAmount: lobby.entryAmount };
-  sendToAddress(lobby.host.address, {
-    ...resultMsg,
-    profile: publicProfile(lobby.host.address),
-    newAchievements: hostNewAchievements,
-  });
-  sendToAddress(lobby.guest.address, {
-    ...resultMsg,
-    profile: publicProfile(lobby.guest.address),
-    newAchievements: guestNewAchievements,
-  });
+    practice: lobby.practice,
+    ranking: ranked.map((r) => ({
+      address: r.p.address,
+      nickname: r.p.nickname,
+      picks: r.p.picks,
+      pct: r.pct,
+      won: winnerAddresses.has(r.p.address.toLowerCase()),
+      net: Math.round(netByAddress[r.p.address.toLowerCase()] * 100) / 100,
+    })),
+  };
+  for (const p of lobby.players) {
+    const key = p.address.toLowerCase();
+    sendToAddress(p.address, {
+      ...resultMsg,
+      profile: lobby.practice ? undefined : publicProfile(key),
+      newAchievements: newAchievementsByAddress[key] || [],
+    });
+  }
   lobbies.delete(lobby.id);
 }
+
+function beginPickPhase(lobby) {
+  lobby.status = "picking";
+  lobby.pickDeadline = Date.now() + PICK_SECONDS * 1000;
+  for (const p of lobby.players) p.ready = false;
+  broadcastLobbies();
+  broadcastToLobby(lobby, {
+    type: "match_found",
+    lobbyId: lobby.id,
+    entryAmount: lobby.entryAmount,
+    practice: lobby.practice,
+    size: lobby.size,
+    pickSeconds: PICK_SECONDS,
+    players: lobby.players.map(lobbyPlayerPublic),
+  });
+}
+
+function maybeStartQueuedMatch(lobby) {
+  if (lobby.status === "queueing" && lobby.players.length >= lobby.size) {
+    beginPickPhase(lobby);
+  } else {
+    broadcastLobbies();
+    broadcastToLobby(lobby, { type: "queue_update", lobbyId: lobby.id, ...queueSummary(lobby) });
+  }
+}
+
+// Auto-assign a pick for anyone who doesn't ready up before the pick timer
+// runs out, so one AFK player can't strand the rest of the match.
+function autoFillPicks(lobby) {
+  for (const p of lobby.players) {
+    if (!p.ready || p.picks.length === 0) {
+      p.picks = ["BTC"];
+      p.ready = true;
+    }
+  }
+}
+
+setInterval(() => {
+  for (const lobby of lobbies.values()) {
+    if (lobby.status !== "picking") continue;
+    const allReady = lobby.players.every((p) => p.ready && p.picks.length > 0);
+    if (allReady || Date.now() >= lobby.pickDeadline) {
+      if (!allReady) autoFillPicks(lobby);
+      startDuel(lobby).catch(() => {
+        broadcastToLobby(lobby, { type: "error", message: "price_fetch_failed" });
+        lobbies.delete(lobby.id);
+        broadcastLobbies();
+      });
+    }
+  }
+}, PICK_CHECK_MS);
 
 setInterval(() => {
   for (const lobby of lobbies.values()) {
@@ -476,28 +607,41 @@ wss.on("connection", (ws) => {
     if (msg.type === "hello") {
       if (!msg.address) return;
       subscribe(ws, msg.address);
-      send(ws, { type: "hello_ack", ...publicProfile(msg.address) });
       send(ws, {
-        type: "lobbies",
-        lobbies: [...lobbies.values()].filter((l) => l.status === "open").map(lobbySummary),
+        type: "hello_ack",
+        ...publicProfile(msg.address),
+        assets: Object.keys(ASSET_BINANCE),
+        stakes: STAKES,
+        sizes: SIZES,
       });
+      send(ws, { type: "lobbies", lobbies: publicLobbyList() });
+      send(ws, { type: "day_change", values: Object.fromEntries(dayChangeCache) });
 
-      // resume an in-progress duel for a reconnecting player
-      const key = msg.address.toLowerCase();
-      for (const lobby of lobbies.values()) {
-        if (
-          lobby.status === "active" &&
-          (lobby.host.address.toLowerCase() === key || lobby.guest.address.toLowerCase() === key)
-        ) {
-          send(ws, duelStartedPayload(lobby));
-          const last = lobby.history.at(-1);
+      // resume an in-progress match (queueing, picking, or active) for a
+      // reconnecting player instead of stranding them on the connect screen
+      const existing = findLobbyForAddress(msg.address, ["queueing", "picking", "active"]);
+      if (existing) {
+        if (existing.status === "queueing") {
+          send(ws, { type: "queue_update", lobbyId: existing.id, ...queueSummary(existing) });
+        } else if (existing.status === "picking") {
+          send(ws, {
+            type: "match_found",
+            lobbyId: existing.id,
+            entryAmount: existing.entryAmount,
+            practice: existing.practice,
+            size: existing.size,
+            pickSeconds: Math.max(0, (existing.pickDeadline - Date.now()) / 1000),
+            players: existing.players.map(lobbyPlayerPublic),
+          });
+        } else if (existing.status === "active") {
+          send(ws, duelStartedPayload(existing));
+          const last = existing.history.at(-1);
           send(ws, {
             type: "tick",
-            lobbyId: lobby.id,
-            timeLeft: Math.max(lobby.roundSeconds - (Date.now() - lobby.startedAt) / 1000, 0),
-            pctA: last?.pctA ?? null,
-            pctB: last?.pctB ?? null,
-            history: lobby.history,
+            lobbyId: existing.id,
+            timeLeft: Math.max(existing.roundSeconds - (Date.now() - existing.startedAt) / 1000, 0),
+            pct: last?.pct || {},
+            history: existing.history,
           });
         }
       }
@@ -554,64 +698,96 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // ---- matchmaking queue (TEST practice + PVP real-stake auto-match) ----
+    if (msg.type === "queue_join") {
+      if (hasActiveEngagement(address)) {
+        send(ws, { type: "error", message: "already_in_a_duel" });
+        return;
+      }
+      const matchType = msg.matchType === "test" ? "test" : "pvp";
+      const size = SIZES.includes(msg.size) ? msg.size : 2;
+      const practice = matchType === "test";
+      const entryAmount = practice ? PRACTICE_ENTRY_AMOUNT : STAKES.includes(msg.entryAmount) ? msg.entryAmount : STAKES[0];
+      const user = getUser(address);
+      if (!practice && user.balance < entryAmount) {
+        send(ws, { type: "error", message: "insufficient_balance" });
+        return;
+      }
+      const bucketKey = `${matchType}:${entryAmount}:${size}`;
+      let bucket = [...lobbies.values()].find(
+        (l) => l.kind === "queue" && l.status === "queueing" && l.bucketKey === bucketKey
+      );
+      if (!bucket) {
+        const id = randomUUID();
+        bucket = {
+          id,
+          kind: "queue",
+          matchType,
+          bucketKey,
+          size,
+          entryAmount,
+          practice,
+          password: null,
+          players: [],
+          status: "queueing",
+        };
+        lobbies.set(id, bucket);
+      }
+      bucket.players.push({ address, nickname: user.nickname || "Anon", picks: [], ready: false });
+      send(ws, { type: "queue_joined", lobbyId: bucket.id });
+      maybeStartQueuedMatch(bucket);
+      return;
+    }
+
     if (msg.type === "create_lobby") {
       if (hasActiveEngagement(address)) {
         send(ws, { type: "error", message: "already_in_a_duel" });
         return;
       }
-      const picks = [...new Set(msg.picks || [])].filter((s) => ASSET_BINANCE[s]).slice(0, MAX_PICKS);
-      if (picks.length === 0) {
-        send(ws, { type: "error", message: "pick_at_least_one" });
+      const size = SIZES.includes(msg.size) ? msg.size : 2;
+      if (!STAKES.includes(msg.entryAmount)) {
+        send(ws, { type: "error", message: "insufficient_balance" });
         return;
       }
       const user = getUser(address);
-      if (!(msg.entryAmount > 0) || user.balance < msg.entryAmount) {
+      if (user.balance < msg.entryAmount) {
         send(ws, { type: "error", message: "insufficient_balance" });
         return;
       }
       const id = randomUUID();
       lobbies.set(id, {
         id,
+        kind: "lobby",
+        matchType: "lobby",
+        size,
         entryAmount: msg.entryAmount,
-        roundSeconds: ROUND_SECONDS,
-        host: { address, nickname: user.nickname || "Anon", picks },
-        guest: null,
-        status: "open",
+        practice: false,
+        password: msg.password ? String(msg.password).slice(0, 16) : null,
+        players: [{ address, nickname: user.nickname || "Anon", picks: [], ready: false }],
+        status: "queueing",
       });
+      send(ws, { type: "queue_joined", lobbyId: id });
       broadcastLobbies();
-      return;
-    }
-
-    if (msg.type === "cancel_lobby") {
-      const lobby = lobbies.get(msg.lobbyId);
-      if (lobby && lobby.status === "open" && lobby.host.address.toLowerCase() === address) {
-        lobbies.delete(lobby.id);
-        broadcastLobbies();
-      }
+      broadcastToLobby(lobbies.get(id), { type: "queue_update", lobbyId: id, ...queueSummary(lobbies.get(id)) });
       return;
     }
 
     if (msg.type === "join_lobby") {
       const lobby = lobbies.get(msg.lobbyId);
-      if (!lobby || lobby.status !== "open") {
+      if (!lobby || lobby.kind !== "lobby" || lobby.status !== "queueing") {
         send(ws, { type: "error", message: "lobby_unavailable" });
         return;
       }
-      if (lobby.host.address.toLowerCase() === address) {
-        send(ws, { type: "error", message: "cannot_join_own_lobby" });
+      if (lobby.players.some((p) => p.address.toLowerCase() === address)) {
+        send(ws, { type: "error", message: "already_in_a_duel" });
+        return;
+      }
+      if (lobby.password && String(msg.password || "") !== lobby.password) {
+        send(ws, { type: "error", message: "wrong_password" });
         return;
       }
       if (hasActiveEngagement(address)) {
         send(ws, { type: "error", message: "already_in_a_duel" });
-        return;
-      }
-      const picks = [...new Set(msg.picks || [])].filter((s) => ASSET_BINANCE[s]).slice(0, MAX_PICKS);
-      if (picks.length === 0) {
-        send(ws, { type: "error", message: "pick_at_least_one" });
-        return;
-      }
-      if (sameBasket(picks, lobby.host.picks)) {
-        send(ws, { type: "error", message: "same_basket" });
         return;
       }
       const user = getUser(address);
@@ -619,20 +795,47 @@ wss.on("connection", (ws) => {
         send(ws, { type: "error", message: "insufficient_balance" });
         return;
       }
-      const hostUser = getUser(lobby.host.address);
-      if (hostUser.balance < lobby.entryAmount) {
-        send(ws, { type: "error", message: "host_no_longer_has_balance" });
+      lobby.players.push({ address, nickname: user.nickname || "Anon", picks: [], ready: false });
+      send(ws, { type: "queue_joined", lobbyId: lobby.id });
+      maybeStartQueuedMatch(lobby);
+      return;
+    }
+
+    if (msg.type === "cancel_queue") {
+      const lobby = lobbies.get(msg.lobbyId);
+      if (!lobby || lobby.status !== "queueing") return;
+      lobby.players = lobby.players.filter((p) => p.address.toLowerCase() !== address);
+      if (lobby.players.length === 0) {
         lobbies.delete(lobby.id);
-        broadcastLobbies();
+      } else {
+        broadcastToLobby(lobby, { type: "queue_update", lobbyId: lobby.id, ...queueSummary(lobby) });
+      }
+      broadcastLobbies();
+      return;
+    }
+
+    if (msg.type === "submit_picks") {
+      const lobby = lobbies.get(msg.lobbyId);
+      if (!lobby || lobby.status !== "picking") {
+        send(ws, { type: "error", message: "lobby_unavailable" });
         return;
       }
-
-      lobby.guest = { address, nickname: user.nickname || "Anon", picks };
-      startDuel(lobby).catch(() => {
-        sendToAddress(lobby.host.address, { type: "error", message: "price_fetch_failed" });
-        sendToAddress(address, { type: "error", message: "price_fetch_failed" });
-        lobbies.delete(lobby.id);
-        broadcastLobbies();
+      const player = lobby.players.find((p) => p.address.toLowerCase() === address);
+      if (!player) {
+        send(ws, { type: "error", message: "not_registered" });
+        return;
+      }
+      const picks = [...new Set(msg.picks || [])].filter((s) => ASSET_BINANCE[s]).slice(0, MAX_PICKS);
+      if (picks.length === 0) {
+        send(ws, { type: "error", message: "pick_at_least_one" });
+        return;
+      }
+      player.picks = picks;
+      player.ready = true;
+      broadcastToLobby(lobby, {
+        type: "pick_update",
+        lobbyId: lobby.id,
+        players: lobby.players.map((p) => ({ address: p.address, ready: p.ready })),
       });
       return;
     }
@@ -642,10 +845,16 @@ wss.on("connection", (ws) => {
     const address = unsubscribe(ws);
     if (!address) return;
     for (const lobby of [...lobbies.values()]) {
-      if (lobby.status === "open" && lobby.host.address.toLowerCase() === address) {
+      if (lobby.status !== "queueing") continue;
+      const wasIn = lobby.players.some((p) => p.address.toLowerCase() === address);
+      if (!wasIn) continue;
+      lobby.players = lobby.players.filter((p) => p.address.toLowerCase() !== address);
+      if (lobby.players.length === 0) {
         lobbies.delete(lobby.id);
-        broadcastLobbies();
+      } else {
+        broadcastToLobby(lobby, { type: "queue_update", lobbyId: lobby.id, ...queueSummary(lobby) });
       }
+      broadcastLobbies();
     }
   });
 });
